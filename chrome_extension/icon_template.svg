@@ -1,0 +1,19 @@
+<!-- 
+  Icon placeholder - Replace with actual PNG icons:
+  - icon16.png (16x16)
+  - icon48.png (48x48)  
+  - icon128.png (128x128)
+  
+  You can create simple icons using any image editor or online tool.
+  For now, you can use this SVG as a base and convert it to PNG:
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#2196f3"/>
+      <stop offset="100%" style="stop-color:#1565c0"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="24" fill="url(#bg)"/>
+  <text x="64" y="85" text-anchor="middle" font-family="Arial" font-size="72" font-weight="bold" fill="white">C</text>
+</svg>

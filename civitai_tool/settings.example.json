@@ -1,0 +1,16 @@
+{
+  "api_key": "YOUR_CIVITAI_API_KEY_HERE",
+  "username": "",
+  "model_id": "",
+  "version_id": "",
+  "nsfw": "X",
+  "period": "AllTime",
+  "sort": "Most Collected",
+  "output": "C:/path/to/your/models",
+  "model_base_path": "C:/path/to/your/models",
+  "max_items": "20",
+  "base_models": [],
+  "tags": {},
+  "recent_dirs": [],
+  "extension_server_enabled": true
+}

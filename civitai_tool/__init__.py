@@ -1,0 +1,1 @@
+"""Civitai desktop helper package."""

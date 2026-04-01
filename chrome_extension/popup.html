@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    
+    body {
+      width: 320px;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+      color: #e0e0e0;
+      padding: 16px;
+    }
+    
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 16px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid #333;
+    }
+    
+    .header img {
+      width: 32px;
+      height: 32px;
+    }
+    
+    .header h1 {
+      font-size: 14px;
+      font-weight: 600;
+      color: #fff;
+    }
+    
+    .status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 12px;
+      background: rgba(255,255,255,0.05);
+      border-radius: 8px;
+      margin-bottom: 12px;
+      font-size: 12px;
+    }
+    
+    .status-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #ff4444;
+    }
+    
+    .status-dot.connected {
+      background: #44ff44;
+      box-shadow: 0 0 8px #44ff44;
+    }
+    
+    .url-preview {
+      background: rgba(0,0,0,0.3);
+      border-radius: 8px;
+      padding: 10px 12px;
+      margin-bottom: 12px;
+      font-size: 11px;
+      color: #888;
+      word-break: break-all;
+      max-height: 60px;
+      overflow: hidden;
+    }
+    
+    .url-preview.civitai {
+      color: #64b5f6;
+    }
+    
+    .url-preview .label {
+      color: #666;
+      font-size: 10px;
+      text-transform: uppercase;
+      margin-bottom: 4px;
+    }
+    
+    button {
+      width: 100%;
+      padding: 12px 16px;
+      border: none;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+    
+    button.primary {
+      background: linear-gradient(135deg, #2196f3 0%, #1976d2 100%);
+      color: white;
+    }
+    
+    button.primary:hover {
+      background: linear-gradient(135deg, #42a5f5 0%, #2196f3 100%);
+      transform: translateY(-1px);
+    }
+    
+    button.primary:active {
+      transform: translateY(0);
+    }
+    
+    button:disabled {
+      background: #333;
+      color: #666;
+      cursor: not-allowed;
+      transform: none;
+    }
+    
+    .shortcut-hint {
+      text-align: center;
+      font-size: 10px;
+      color: #666;
+      margin-top: 12px;
+    }
+    
+    .shortcut-hint kbd {
+      background: #333;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-family: monospace;
+    }
+    
+    .message {
+      text-align: center;
+      padding: 10px;
+      border-radius: 8px;
+      margin-top: 12px;
+      font-size: 12px;
+      display: none;
+    }
+    
+    .message.success {
+      background: rgba(76, 175, 80, 0.2);
+      color: #81c784;
+      display: block;
+    }
+    
+    .message.error {
+      background: rgba(244, 67, 54, 0.2);
+      color: #e57373;
+      display: block;
+    }
+    
+    .not-civitai {
+      text-align: center;
+      padding: 20px;
+      color: #888;
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <img src="icon48.png" alt="icon">
+    <h1>Civitai to Desktop</h1>
+  </div>
+  
+  <div class="status">
+    <div class="status-dot" id="statusDot"></div>
+    <span id="statusText">Checking connection...</span>
+  </div>
+  
+  <div id="content">
+    <div class="url-preview" id="urlPreview">
+      <div class="label">Current URL</div>
+      <div id="urlText">Loading...</div>
+    </div>
+    
+    <button class="primary" id="sendBtn" disabled>
+      <span>📤</span> Send to Desktop App
+    </button>
+    
+    <div class="message" id="message"></div>
+    
+    <div class="shortcut-hint">
+      Keyboard shortcut: <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>C</kbd>
+    </div>
+  </div>
+  
+  <div class="not-civitai" id="notCivitai" style="display: none;">
+    <p>Navigate to a Civitai page to send it to the desktop app.</p>
+  </div>
+  
+  <script src="popup.js"></script>
+</body>
+</html>
