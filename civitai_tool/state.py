@@ -32,7 +32,7 @@ class ResolvedEntity:
 class FilterState:
     query: str = ""
     base_models: List[str] = field(default_factory=list)
-    tag_ids: List[int] = field(default_factory=list)
+    tag_names: List[str] = field(default_factory=list)
     nsfw: str = "None"
     period: str = "AllTime"
     sort: str = "Most Reactions"

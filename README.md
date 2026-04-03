@@ -143,6 +143,111 @@ Downloaded files are organized automatically:
 
 ---
 
+## Using the App
+
+The app has three tabs: **Filters & Download**, **Search**, and **Settings**.
+
+---
+
+### Filters & Download tab
+
+This is the main working tab. Set your filters here and click **⬇ Download**.
+
+#### Quick Start — Paste a Civitai URL
+
+The fastest way to download anything. Paste a Civitai URL (model page, version page, post, or user profile) and click **⬇ Download**. The app auto-resolves the URL to model/version IDs before downloading. You can also click **Resolve** first to preview what was detected without starting the download.
+
+#### Platforms
+
+Checkboxes for common base models (Flux, SDXL, Pony, SD 1.5, etc.). Checked platforms are used as a `baseModel` filter when searching images by username. Use the **Custom** field for any base model not listed.
+
+#### Model and user filters
+
+| Field | What it does |
+|---|---|
+| **Username** | Download all images/models from this Civitai user |
+| **Model ID** | Target a specific model by its numeric ID |
+| **Version ID** | Target a specific model version |
+| **Max items** | Cap the number of results fetched (0 = unlimited) |
+
+#### Result options
+
+| Option | What it does |
+|---|---|
+| **NSFW** | Filter by content rating: None, Soft, Mature, or X |
+| **Period** | Time window for sorting: AllTime, Year, Month, Week, Day |
+| **Sort** | Sort order: Most Reactions, Most Comments, Newest, etc. |
+| **Images / Videos** | Toggle whether image or video type results are included |
+
+#### Download options
+
+Controls what gets saved alongside each downloaded model file:
+
+| Option | What it does |
+|---|---|
+| **Previews** | Download showcase preview images |
+| **Originals** | Download the original full-resolution images |
+| **Workflows** | Download ComfyUI workflow JSON files if present |
+| **Videos** | Download video previews |
+| **Metadata** | Save a `.json` sidecar file with full API metadata |
+| **Native size** | Download images at their original resolution rather than a scaled version |
+
+#### Tags
+
+Tags let you narrow image downloads to content matching specific Civitai tags (e.g. `portrait`, `woman`, `sci-fi`).
+
+1. Type a keyword in the **Search** box and click **Search** — matching tags appear in the left list with a count of how many models use each tag.
+2. Select a tag in the left list and click **+ Add** — it moves to the **Active Tags** list on the right.
+3. Add as many tags as needed. When you click **⬇ Download**, only content tagged with those active tags will be fetched.
+4. To remove a tag, select it in the **Active Tags** list and click **- Remove**.
+
+> **Note:** Tags filter image searches (downloads by username or broad browse). If you download by Model ID or URL you are already targeting a specific model, so the tag filter has no additional effect.
+
+---
+
+### Search tab
+
+Use this tab to find models, images, creators, or tags before downloading.
+
+#### Search types
+
+Select the type from the dropdown next to the **Search** button:
+
+| Type | What it searches | Columns shown |
+|---|---|---|
+| **models** | Model name/keyword | ID, Name, Type, Base Model, Downloads |
+| **images** | Community images | ID, Model Name, Media Type, NSFW Level, Creator |
+| **creators** | User accounts | Username, Model Count |
+| **tags** | Civitai tag names | ID, Tag Name, Model Count |
+
+#### Using results
+
+- **Apply to Filters** (or **double-click** a row) — copies the selected result's IDs into the Filters & Download tab:
+  - Model result → sets **Model ID** + **Username** (creator)
+  - Image result → sets **Model ID** + **Version ID**
+  - Creator result → sets **Username**
+  - Tag result → adds the tag to Active Tags
+  After applying, switch to the **Filters & Download** tab and click **⬇ Download**.
+
+- **Open in Civitai** — opens the selected result's Civitai page in your browser:
+  - Model → `civitai.com/models/{id}`
+  - Image → `civitai.com/images/{id}`
+  - Creator → `civitai.com/user/{username}`
+  - Tag → the tag's model listing page
+
+---
+
+### Settings tab
+
+| Setting | What it does |
+|---|---|
+| **API Key** | Your Civitai Bearer token — required for NSFW content and higher rate limits. Get one from [civitai.com/user/account](https://civitai.com/user/account) |
+| **Model base path** | Root folder used when organizing model files into sub-folders by model/version ID |
+| **Extension Server** | Toggle the local HTTP server (port 7865) that receives URLs from the Chrome extension |
+
+---
+
 ## License
 
 Apache 2.0 — see [LICENSE](LICENSE).
+

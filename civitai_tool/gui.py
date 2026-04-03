@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+import webbrowser
 from queue import Queue, Empty
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -151,7 +152,7 @@ class CivitaiApp:
         self._style.configure("Recent.TButton", padding=(6, 2), font=("Segoe UI", 8))
 
         self._message_queue: Queue[tuple[str, str]] = Queue()
-        self._selected_tags: Dict[int, str] = {}
+        self._selected_tags: Dict[str, str] = {}  # tag_name -> display_name
         self._current_results: List[Dict] = []
         self.status_var = tk.StringVar(value="Ready")
         self.download_button: Optional[ttk.Button] = None
@@ -247,8 +248,6 @@ class CivitaiApp:
         notebook.add(self.settings_tab, text="  Settings  ")
 
         self._build_filters_section(primary_tab)
-        ttk.Separator(primary_tab, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=10, pady=(6, 6))
-        self._build_download_section(primary_tab)
         self._build_search_tab()
         self._build_settings_tab()
 
@@ -295,28 +294,32 @@ class CivitaiApp:
 
         ttk.Label(search_frame, text="Query:").grid(row=0, column=2, sticky="w")
         ttk.Entry(search_frame, textvariable=self.search_query_var).grid(row=0, column=3, sticky="we", padx=5)
-        ttk.Button(search_frame, text="Search", command=self._perform_search).grid(row=0, column=4, padx=5)
+        self._search_button = ttk.Button(search_frame, text="Search", command=self._perform_search)
+        self._search_button.grid(row=0, column=4, padx=5)
         ttk.Button(search_frame, text="Clear", command=self._clear_search).grid(row=0, column=5, padx=5)
         search_frame.columnconfigure(3, weight=1)
 
-        columns = ("col1", "col2", "col3")
-        self.results_tree = ttk.Treeview(search_frame, columns=columns, show="headings", height=12)
-        headings = {
-            "col1": "Identifier",
-            "col2": "Name",
-            "col3": "Details",
-        }
-        for col in columns:
-            self.results_tree.heading(col, text=headings.get(col, col))
-            self.results_tree.column(col, width=220)
+        _TREE_COLS = ("col1", "col2", "col3", "col4", "col5")
+        _COL_WIDTHS = (60, 260, 90, 130, 90)
+        self.results_tree = ttk.Treeview(search_frame, columns=_TREE_COLS, show="headings", height=12)
+        for col, w in zip(_TREE_COLS, _COL_WIDTHS):
+            self.results_tree.heading(col, text="")
+            self.results_tree.column(col, width=w, minwidth=40)
         self.results_tree.grid(row=1, column=0, columnspan=6, sticky="nsew", pady=8)
+        self.results_tree.bind("<Double-1>", lambda _e: self._apply_selection())
         search_frame.rowconfigure(1, weight=1)
 
         btn_frame = ttk.Frame(search_frame)
-        btn_frame.grid(row=2, column=0, columnspan=6, sticky="e", pady=5)
-        ttk.Label(btn_frame, text="Apply sets the IDs/filters only; downloads start on the Download tab.").pack(side=tk.LEFT)
+        btn_frame.grid(row=2, column=0, columnspan=6, sticky="ew", pady=5)
+        ttk.Label(
+            btn_frame,
+            text="ℹ️ Double-click or Apply → loads the selected item\'s IDs into the Download tab filters.",
+            font=("Segoe UI", 8),
+            foreground="#555555",
+        ).pack(side=tk.LEFT)
         self.apply_selection_button = ttk.Button(btn_frame, text="Apply to Filters", command=self._apply_selection)
         self.apply_selection_button.pack(side=tk.RIGHT, padx=5)
+        ttk.Button(btn_frame, text="Open in Civitai", command=self._open_result_in_browser).pack(side=tk.RIGHT, padx=5)
 
     def _build_filters_section(self, parent: ttk.Frame) -> None:
         url_frame = ttk.LabelFrame(parent, text="Quick Start - Paste a Civitai URL")
@@ -386,6 +389,17 @@ class CivitaiApp:
         ttk.Checkbutton(options_frame, text="Images", variable=self.include_images_var).grid(row=0, column=6, sticky="w", padx=4)
         ttk.Checkbutton(options_frame, text="Videos", variable=self.include_videos_var).grid(row=0, column=7, sticky="w", padx=4)
 
+        # Download options (merged here so tag_frame is last and can expand properly)
+        ttk.Separator(parent, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=10, pady=(4, 2))
+        dl_frame = ttk.LabelFrame(parent, text="Download options")
+        dl_frame.pack(fill=tk.X, padx=5, pady=(0, 3))
+        ttk.Checkbutton(dl_frame, text="Previews",    variable=self.include_previews_var).grid( row=0, column=0, sticky="w", padx=3, pady=2)
+        ttk.Checkbutton(dl_frame, text="Originals",   variable=self.include_originals_var).grid(row=0, column=1, sticky="w", padx=3, pady=2)
+        ttk.Checkbutton(dl_frame, text="Workflows",   variable=self.include_workflows_var).grid(row=0, column=2, sticky="w", padx=3, pady=2)
+        ttk.Checkbutton(dl_frame, text="Videos",      variable=self.include_videos_var).grid(    row=0, column=3, sticky="w", padx=3, pady=2)
+        ttk.Checkbutton(dl_frame, text="Metadata",    variable=self.save_metadata_var).grid(     row=0, column=4, sticky="w", padx=3, pady=2)
+        ttk.Checkbutton(dl_frame, text="Native size", variable=self.native_images_var).grid(     row=0, column=5, sticky="w", padx=3, pady=2)
+
         tag_frame = ttk.LabelFrame(parent, text="Tags")
         tag_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=3)
         ttk.Label(tag_frame, text="Search:").grid(row=0, column=0, sticky="w", padx=2)
@@ -402,30 +416,30 @@ class CivitaiApp:
         
         # Search results (left)
         tag_columns = ("name", "models")
-        self.tag_results_tree = ttk.Treeview(tag_lists_frame, columns=tag_columns, show="headings", height=4)
+        self.tag_results_tree = ttk.Treeview(tag_lists_frame, columns=tag_columns, show="headings", height=5)
         self.tag_results_tree.heading("name", text="Search Results")
         self.tag_results_tree.heading("models", text="#")
         self.tag_results_tree.column("name", width=180)
         self.tag_results_tree.column("models", width=40)
-        self.tag_results_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 4))
+        tag_vsb = ttk.Scrollbar(tag_lists_frame, orient=tk.VERTICAL, command=self.tag_results_tree.yview)
+        self.tag_results_tree.configure(yscrollcommand=tag_vsb.set)
+        self.tag_results_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        tag_vsb.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 6))
 
         # Active tags (right)
-        self.active_tags_tree = ttk.Treeview(tag_lists_frame, columns=("tag",), show="headings", height=4)
+        self.active_tags_tree = ttk.Treeview(tag_lists_frame, columns=("tag",), show="headings", height=5)
         self.active_tags_tree.heading("tag", text="Active Tags")
         self.active_tags_tree.column("tag", width=200)
+        active_vsb = ttk.Scrollbar(tag_lists_frame, orient=tk.VERTICAL, command=self.active_tags_tree.yview)
+        self.active_tags_tree.configure(yscrollcommand=active_vsb.set)
         self.active_tags_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        active_vsb.pack(side=tk.LEFT, fill=tk.Y)
 
     def _build_download_section(self, parent: ttk.Frame) -> None:
-        options_frame = ttk.LabelFrame(parent, text="Download options")
-        options_frame.pack(fill=tk.X, padx=5, pady=3)
-        ttk.Checkbutton(options_frame, text="Previews", variable=self.include_previews_var).grid(row=0, column=0, sticky="w", padx=3, pady=2)
-        ttk.Checkbutton(options_frame, text="Originals", variable=self.include_originals_var).grid(row=0, column=1, sticky="w", padx=3, pady=2)
-        ttk.Checkbutton(options_frame, text="Workflows", variable=self.include_workflows_var).grid(row=0, column=2, sticky="w", padx=3, pady=2)
-        ttk.Checkbutton(options_frame, text="Videos", variable=self.include_videos_var).grid(row=0, column=3, sticky="w", padx=3, pady=2)
-        ttk.Checkbutton(options_frame, text="Metadata", variable=self.save_metadata_var).grid(row=0, column=4, sticky="w", padx=3, pady=2)
-        ttk.Checkbutton(options_frame, text="Native size", variable=self.native_images_var).grid(row=0, column=5, sticky="w", padx=3, pady=2)
+        # Options are now embedded in _build_filters_section; this method is kept
+        # for compatibility but does nothing.
+        pass
 
-        # Download button now lives next to the URL entry for quicker access.
 
     def _build_settings_tab(self) -> None:
         """Build the Settings tab with API key and path configurations."""
@@ -869,40 +883,74 @@ Settings are automatically saved when you close the app."""
         return True
 
     def _perform_search(self) -> None:
+        # Read all tkinter variables on the main thread before handing off to a worker thread
         query = self.search_query_var.get().strip()
         category = self.search_type_var.get()
+        username = self.username_var.get().strip() or ""
+        base_models = self._collect_base_models()
+        model_id = self._safe_int(self.model_id_var.get())
+        version_id = self._safe_int(self.version_id_var.get())
+        nsfw_val = self.nsfw_var.get()
+        nsfw = nsfw_val if nsfw_val != "None" else ""
+        media_types = self._selected_media_types()
+
         self.status_var.set("Searching…")
-        try:
-            if category == "models":
-                payload = self.client.search_models(query=query, username=self.username_var.get().strip() or "", base_models=self._collect_base_models())
-                items = payload.get("items", [])
-                display = [(item.get("id"), item.get("name"), item.get("type")) for item in items]
-            elif category == "images":
-                items, _ = self.client.search_images(limit=50, username=self.username_var.get().strip() or "", model_id=self._safe_int(self.model_id_var.get()), model_version_id=self._safe_int(self.version_id_var.get()), nsfw=self.nsfw_var.get() if self.nsfw_var.get() != "None" else "", types=self._selected_media_types(), base_models=self._collect_base_models())
-                display = [(item.get("id"), item.get("modelName"), item.get("type")) for item in items]
-            elif category == "creators":
-                payload = self.client.search_creators(query=query or self.username_var.get().strip())
-                items = payload.get("items", [])
-                display = [(entry.get("username"), entry.get("modelCount"), "Creator") for entry in items]
-            else:
-                payload = self.client.search_tags(query=query)
-                items = payload.get("items", [])
-                display = [(entry.get("id"), entry.get("name"), entry.get("modelCount")) for entry in items]
-        except ApiError as exc:
-            messagebox.showerror("Search failed", str(exc))
-            return
-        finally:
-            self.status_var.set("Ready")
+        if hasattr(self, "_search_button"):
+            self._search_button.config(state=tk.DISABLED)
 
-        for row in self.results_tree.get_children():
-            self.results_tree.delete(row)
-        self._current_results = items
+        def _worker() -> None:
+            try:
+                if category == "models":
+                    payload = self.client.search_models(
+                        query=query, username=username, base_models=base_models
+                    )
+                    items = payload.get("items", [])
+                    display = [
+                        (
+                            item.get("id", ""),
+                            item.get("name", ""),
+                            item.get("type", ""),
+                            # first version's base model (most recent version)
+                            (item.get("modelVersions") or [{}])[0].get("baseModel", ""),
+                            item.get("stats", {}).get("downloadCount", ""),
+                        )
+                        for item in items
+                    ]
+                elif category == "images":
+                    items, _ = self.client.search_images(
+                        limit=50, username=username, model_id=model_id,
+                        model_version_id=version_id, nsfw=nsfw,
+                        types=media_types, base_models=base_models,
+                    )
+                    display = [
+                        (
+                            item.get("id", ""),
+                            item.get("modelName", ""),
+                            item.get("type", ""),
+                            item.get("nsfwLevel", ""),
+                            item.get("username", ""),
+                        )
+                        for item in items
+                    ]
+                elif category == "creators":
+                    payload = self.client.search_creators(query=query or username)
+                    items = payload.get("items", [])
+                    display = [
+                        (entry.get("username", ""), entry.get("modelCount", ""), "", "", "")
+                        for entry in items
+                    ]
+                else:
+                    payload = self.client.search_tags(query=query)
+                    items = payload.get("items", [])
+                    display = [
+                        (entry.get("id", ""), entry.get("name", ""), entry.get("modelCount", ""), "", "")
+                        for entry in items
+                    ]
+                self._queue_action("search_results", {"items": items, "display": display, "category": category})
+            except ApiError as exc:
+                self._queue_action("search_error", {"message": str(exc)})
 
-        for entry in display:
-            values = tuple(value if value is not None else "" for value in entry)
-            self.results_tree.insert("", tk.END, values=values)
-
-        self._queue_log(f"Search returned {len(items)} items.")
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _clear_search(self) -> None:
         self.search_query_var.set("")
@@ -966,47 +1014,57 @@ Settings are automatically saved when you close the app."""
                 self.username_var.set(username)
             self._queue_log(f"Applied creator {username} to filters.")
         else:
-            tag_id = item.get("id")
             name = item.get("name")
-            if tag_id and name:
-                self._selected_tags[int(tag_id)] = name
+            if name:
+                self._selected_tags[name] = name
                 self._refresh_active_tags()
             self._queue_log(f"Tag {name} queued for filtering.")
+
+    def _open_result_in_browser(self) -> None:
+        selected = self.results_tree.selection()
+        if not selected:
+            return
+        index = self.results_tree.index(selected[0])
+        if index >= len(self._current_results):
+            return
+        item = self._current_results[index]
+        category = self.search_type_var.get()
+        if category == "models":
+            url = f"https://civitai.com/models/{item.get('id')}"
+        elif category == "images":
+            url = f"https://civitai.com/images/{item.get('id')}"
+        elif category == "creators":
+            url = f"https://civitai.com/user/{item.get('username')}"
+        else:
+            # tags have a link field
+            url = item.get("link", "")
+        if url:
+            webbrowser.open(url)
 
     def _search_tags(self) -> None:
         query = self.tag_query_var.get().strip()
         self.status_var.set("Searching tags…")
-        try:
-            payload = self.client.search_tags(query=query)
-        except ApiError as exc:
-            messagebox.showerror("Tag search failed", str(exc))
-            return
-        finally:
-            self.status_var.set("Ready")
-        self._tag_lookup.clear()
-        for row in self.tag_results_tree.get_children():
-            self.tag_results_tree.delete(row)
-        for item in payload.get("items", []):
-            tag_id = item.get("id")
+
+        def _worker() -> None:
             try:
-                tag_int = int(tag_id)
-            except (TypeError, ValueError):
-                continue
-            iid = str(tag_int)
-            self._tag_lookup[iid] = tag_int
-            self.tag_results_tree.insert("", tk.END, values=(item.get("name"), item.get("modelCount")), iid=iid)
-        self._queue_log(f"Loaded {len(payload.get('items', []))} tags.")
+                payload = self.client.search_tags(query=query)
+            except ApiError as exc:
+                self._queue_action("search_error", {"message": str(exc)})
+                return
+            finally:
+                self._queue_status("Ready")
+            items = payload.get("items", [])
+            self._queue_action("tag_results", {"items": items})
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _add_selected_tag(self) -> None:
         selection = self.tag_results_tree.selection()
         if not selection:
             return
         for iid in selection:
-            tag_id = self._tag_lookup.get(iid)
-            if tag_id is None:
-                continue
-            name = self.tag_results_tree.item(iid, "values")[0]
-            self._selected_tags[tag_id] = name
+            name = self._tag_lookup.get(iid) or iid
+            self._selected_tags[name] = name
         self._refresh_active_tags()
 
     def _remove_selected_tag(self) -> None:
@@ -1014,18 +1072,14 @@ Settings are automatically saved when you close the app."""
         if not selection:
             return
         for iid in selection:
-            try:
-                tag_id = int(iid)
-            except ValueError:
-                continue
-            self._selected_tags.pop(tag_id, None)
+            self._selected_tags.pop(iid, None)
         self._refresh_active_tags()
 
     def _refresh_active_tags(self) -> None:
         for row in self.active_tags_tree.get_children():
             self.active_tags_tree.delete(row)
-        for tag_id, name in sorted(self._selected_tags.items()):
-            self.active_tags_tree.insert("", tk.END, values=(f"{tag_id} – {name}",), iid=str(tag_id))
+        for name in sorted(self._selected_tags):
+            self.active_tags_tree.insert("", tk.END, values=(name,), iid=name)
 
     def _sync_platforms(self) -> None:
         selected_values = [value for value, var in self.platform_vars.items() if var.get()]
@@ -1156,7 +1210,7 @@ Settings are automatically saved when you close the app."""
         self.state.filters.query = self.search_query_var.get().strip()
         self.state.filters.username = self.username_var.get().strip()
         self.state.filters.base_models = self._collect_base_models()
-        self.state.filters.tag_ids = list(self._selected_tags.keys())
+        self.state.filters.tag_names = list(self._selected_tags.keys())
         self.state.filters.nsfw = self.nsfw_var.get()
         self.state.filters.period = self.period_var.get()
         sort_value = self.sort_var.get()
@@ -1226,7 +1280,7 @@ Settings are automatically saved when you close the app."""
             elif kind == "action":
                 self._handle_action(payload)
         if flushed:
-            self.log_box.update_idletasks()
+            self.root.update_idletasks()
         self.root.after(200, self._drain_messages)
 
     def _handle_action(self, payload: Any) -> None:
@@ -1243,6 +1297,56 @@ Settings are automatically saved when you close the app."""
                 # Process next item in queue if any
                 self._process_next_in_queue()
         
+        elif action == "search_results" and data is not None:
+            items: List[Dict] = data.get("items", [])
+            display: List[tuple] = data.get("display", [])
+            cat: str = data.get("category", "models")
+            # Update column headings to match the search type
+            _HEADERS: Dict[str, List[str]] = {
+                "models":   ["ID", "Name", "Type", "Base Model", "Downloads"],
+                "images":   ["ID", "Model Name", "Media Type", "NSFW Level", "Creator"],
+                "creators": ["Username", "Model Count", "", "", ""],
+                "tags":     ["ID", "Tag Name", "Model Count", "", ""],
+            }
+            for col, heading in zip(
+                ("col1", "col2", "col3", "col4", "col5"),
+                _HEADERS.get(cat, ["Col 1", "Col 2", "Col 3", "Col 4", "Col 5"]),
+            ):
+                self.results_tree.heading(col, text=heading)
+            for row in self.results_tree.get_children():
+                self.results_tree.delete(row)
+            self._current_results = items
+            for entry in display:
+                values = tuple(value if value is not None else "" for value in entry)
+                self.results_tree.insert("", tk.END, values=values)
+            self._queue_log(f"Search returned {len(items)} items.")
+            self._queue_status("Ready")
+            if hasattr(self, "_search_button"):
+                self._search_button.config(state=tk.NORMAL)
+
+        elif action == "tag_results" and data is not None:
+            items = data.get("items", [])
+            self._tag_lookup.clear()
+            for row in self.tag_results_tree.get_children():
+                self.tag_results_tree.delete(row)
+            inserted = 0
+            for item in items:
+                name = item.get("name", "").strip()
+                if not name:
+                    continue
+                iid = name  # tag name is the unique key
+                self._tag_lookup[iid] = name
+                model_count = item.get("modelCount", "")
+                self.tag_results_tree.insert("", tk.END, values=(name, model_count), iid=iid)
+                inserted += 1
+            self._queue_log(f"Loaded {inserted} of {len(items)} tags.")
+
+        elif action == "search_error" and data is not None:
+            messagebox.showerror("Search failed", data.get("message", "Unknown error"))
+            self._queue_status("Ready")
+            if hasattr(self, "_search_button"):
+                self._search_button.config(state=tk.NORMAL)
+
         elif action == "url_received" and data:
             # URL received from Chrome extension
             url = data.get("url", "")
@@ -1285,7 +1389,7 @@ Settings are automatically saved when you close the app."""
         self.base_models_var.set(", ".join(normalized_models))
         tag_map = data.get("tags", {})
         if isinstance(tag_map, dict):
-            self._selected_tags = {int(k): v for k, v in tag_map.items()}
+            self._selected_tags = {str(k): str(v) for k, v in tag_map.items()}
             self._refresh_active_tags()
         # Load recent directories
         recent = data.get("recent_dirs", [])

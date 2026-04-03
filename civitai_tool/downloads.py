@@ -255,7 +255,7 @@ def fetch_images_for_filters(client: CivitaiClient, filters: FilterState, option
                     period=filters.period,
                     sort=filters.sort,
                     types=filters.types,
-                    tag_ids=filters.tag_ids,
+                    tag_names=filters.tag_names,
                     base_models=filters.base_models,
                     timeout=60,
                 )

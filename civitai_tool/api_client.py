@@ -44,15 +44,21 @@ class CivitaiClient:
 
     def search_models(self, *, query: str = "", username: str = "", base_models: Iterable[str] | None = None,
                       tags: Iterable[str] | None = None, sort: str = "Highest Rated", period: str = "AllTime",
-                      page: int = 1, limit: int = 20, types: Iterable[str] | None = None) -> Dict:
+                      page: int = 1, limit: int = 20, types: Iterable[str] | None = None,
+                      cursor: Optional[str] = None) -> Dict:
         params: Dict[str, object] = {
             "limit": limit,
-            "page": page,
             "sort": sort,
             "period": period,
         }
         if query:
+            # Civitai API rejects "page" when a query string is present; use cursor-based pagination instead
             params["query"] = query
+            if cursor:
+                params["cursor"] = cursor
+        else:
+            # Page-based pagination is only valid for browsing without a search query
+            params["page"] = page
         if username:
             params["username"] = username
         if base_models:
@@ -76,6 +82,7 @@ class CivitaiClient:
                       model_id: Optional[int] = None, model_version_id: Optional[int] = None,
                       username: str = "", nsfw: str = "", period: str = "AllTime", sort: str = "Most Reactions",
                       types: Iterable[str] | None = None, tag_ids: Iterable[int] | None = None,
+                      tag_names: Iterable[str] | None = None,
                       base_models: Iterable[str] | None = None, timeout: int = DEFAULT_TIMEOUT) -> Tuple[List[Dict], Dict[str, object]]:
         params: Dict[str, object] = {
             "limit": limit,
@@ -98,6 +105,8 @@ class CivitaiClient:
             params["types"] = ",".join(types)
         if tag_ids:
             params["tagIds"] = ",".join(str(tid) for tid in tag_ids)
+        if tag_names:
+            params["tag"] = ",".join(tag_names)
         if base_models:
             params["baseModels"] = ",".join(base_models)
         payload = self._get("/api/v1/images", params, timeout=timeout)
