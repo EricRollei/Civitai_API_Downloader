@@ -8,13 +8,145 @@ from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 from .api_client import ApiError, CivitaiClient
+from .image_meta import extract_embedded_metadata, sniff_image_ext
 from .state import AppState, DownloadOptions, FilterState
+from .transfer import TransferSpec, download_file, resolve_redirect
+from .url_resolver import hf_auth_headers
 
 LogFunc = Callable[[str], None]
 
 VIDEO_EXTENSIONS = (".mp4", ".webm", ".mov", ".m4v")
+IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp")
 MODEL_FILE_EXTENSIONS = {".safetensors", ".ckpt", ".pt", ".pth", ".bin", ".onnx"}
 WORKFLOW_FILE_EXTENSIONS = {".zip", ".json", ".workflow", ".yaml", ".yml"}
+MODEL_FILE_TYPES = {
+    "model", "checkpoint", "pruned model", "trained model",
+    "diffusion model", "unet", "vae", "text encoder",
+    "lora", "lycoris", "embedding", "textual inversion",
+}
+# The subset that represents the main generative weights (the thing a quant
+# choice is usually about). VAE/Text Encoder are weight files too, but they are
+# companion components, so they aren't pre-selected by default.
+PRIMARY_MODEL_TYPES = {
+    "model", "checkpoint", "pruned model", "trained model",
+    "diffusion model", "unet", "lora", "lycoris",
+}
+
+
+def _is_model_file(file_info: Dict, ext_lower: str = "") -> bool:
+    """True for the primary weight files (checkpoints/LoRAs/etc.), which are the
+    large assets that come in multiple quantizations. Images, workflows, configs
+    and other side files are never treated as selectable model variants."""
+    file_type = (file_info.get("type") or "").lower()
+    if file_type in MODEL_FILE_TYPES:
+        return True
+    if file_type in {"image", "video", "workflow", "config", "archive"}:
+        return False
+    return ext_lower in MODEL_FILE_EXTENSIONS
+
+
+def describe_variant_files(detail: Dict) -> List[Dict]:
+    """Normalize a version's model (weight) files into pick-list descriptors.
+
+    Returned dicts expose id, name, precision (fp), format, pruned/full size and
+    an approximate size in bytes so the GUI can present the quantization choices
+    (e.g. bf16 vs fp8 vs int8) without re-deriving them from the raw API payload.
+    """
+    descriptors: List[Dict] = []
+    for file_info in detail.get("files") or []:
+        if not isinstance(file_info, dict):
+            continue
+        download_url = file_info.get("downloadUrl")
+        if not download_url:
+            continue
+        metadata = file_info.get("metadata") if isinstance(file_info.get("metadata"), dict) else {}
+        path_ext = os.path.splitext(urlparse_path(download_url))[-1].lower()
+        if not _is_model_file(file_info, path_ext):
+            continue
+        size_kb = metadata.get("sizeKB")
+        if size_kb is None:
+            size_kb = file_info.get("sizeKB")
+        try:
+            size_bytes = int(round(float(size_kb) * 1024)) if size_kb is not None else None
+        except (TypeError, ValueError):
+            size_bytes = None
+        descriptors.append({
+            "id": _first_int(file_info.get("id")),
+            "name": file_info.get("name") or "",
+            "type": (file_info.get("type") or "").strip(),
+            "fp": _first_str(metadata.get("fp")),
+            "format": _first_str(metadata.get("format")),
+            "size_label": _first_str(metadata.get("size")),
+            "size_bytes": size_bytes,
+            "is_primary": (file_info.get("type") or "").strip().lower() in PRIMARY_MODEL_TYPES,
+        })
+    return descriptors
+
+
+def summarize_version_files(detail: Dict) -> List[Dict]:
+    """Normalize every downloadable file in a version for a pre-download preview.
+
+    Unlike describe_variant_files (weight files only) this lists all files —
+    weights, previews, configs, workflows — so the user can see exactly what a
+    run would fetch and how large it is before committing."""
+    rows: List[Dict] = []
+    for file_info in detail.get("files") or []:
+        if not isinstance(file_info, dict):
+            continue
+        download_url = file_info.get("downloadUrl")
+        if not download_url:
+            continue
+        metadata = file_info.get("metadata") if isinstance(file_info.get("metadata"), dict) else {}
+        path_ext = os.path.splitext(urlparse_path(download_url))[-1].lower()
+        size_kb = metadata.get("sizeKB")
+        if size_kb is None:
+            size_kb = file_info.get("sizeKB")
+        try:
+            size_bytes = int(round(float(size_kb) * 1024)) if size_kb is not None else None
+        except (TypeError, ValueError):
+            size_bytes = None
+        rows.append({
+            "id": _first_int(file_info.get("id")),
+            "name": file_info.get("name") or "",
+            "type": (file_info.get("type") or "").lower(),
+            "fp": _first_str(metadata.get("fp")),
+            "format": _first_str(metadata.get("format")),
+            "size_label": _first_str(metadata.get("size")),
+            "size_bytes": size_bytes,
+            "is_model": _is_model_file(file_info, path_ext),
+        })
+    return rows
+
+
+def format_size(num_bytes: Optional[object]) -> str:
+    """Human-readable byte size for preview tables (e.g. 12.2 GB)."""
+    try:
+        value = float(num_bytes)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return "—"
+    if value <= 0:
+        return "—"
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if value < 1024 or unit == "TB":
+            return f"{int(value)} B" if unit == "B" else f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{value:.1f} TB"
+
+
+def _variant_metadata_summary(file_info: Dict, saved_as: str, size_bytes: Optional[int]) -> Dict[str, object]:
+    """Compact precision/format block added to a weight file's .json sidecar so
+    the quantization of a saved checkpoint is obvious without re-querying the API."""
+    metadata = file_info.get("metadata") if isinstance(file_info.get("metadata"), dict) else {}
+    hashes = file_info.get("hashes") if isinstance(file_info.get("hashes"), dict) else {}
+    return {
+        "fileId": _first_int(file_info.get("id")),
+        "precision": _first_str(metadata.get("fp")),
+        "format": _first_str(metadata.get("format")),
+        "sizeLabel": _first_str(metadata.get("size")),
+        "sizeBytes": size_bytes,
+        "savedAs": saved_as,
+        "sha256": _first_str(hashes.get("SHA256"), hashes.get("sha256")),
+    }
 
 
 def _slugify(value: str) -> str:
@@ -55,6 +187,35 @@ def _first_str(*values: object) -> Optional[str]:
             if text:
                 return text
     return None
+
+
+def _civitai_original_url(url: str) -> str:
+    """Rewrite a Civitai image CDN URL to request the full original asset.
+
+    Civitai image URLs look like
+    ``https://image.civitai.com/<bucket>/<uuid>/<transform>/<filename>`` where
+    ``<transform>`` (e.g. ``width=450``) downscales/re-encodes the image. Forcing
+    ``original=true`` returns the uploaded file verbatim — full resolution and,
+    crucially, with the generation metadata (prompt/workflow) still embedded."""
+    from urllib.parse import urlparse
+
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return url
+    if "image.civitai.com" not in parsed.netloc.lower():
+        return url
+    segments = [seg for seg in parsed.path.split("/") if seg]
+    if len(segments) < 2:
+        return url
+    # The transform segment, when present, is the one containing '=' just before
+    # the filename. Replace it, or insert original=true ahead of the filename.
+    if len(segments) >= 3 and "=" in segments[-2]:
+        if "original=true" not in segments[-2]:
+            segments[-2] = "original=true"
+    else:
+        segments.insert(len(segments) - 1, "original=true")
+    return parsed._replace(path="/" + "/".join(segments), query="").geturl()
 
 
 def _resolve_media_paths(
@@ -167,6 +328,57 @@ def _has_embedded_workflow_payload(item: Dict) -> bool:
             return True
 
     return False
+
+
+def _best_prompt(item: Dict, embedded: Optional[Dict]) -> Optional[str]:
+    """Pick the most reliable positive prompt for an image, flattened to one line.
+
+    Prefers the prompt embedded in the file (authoritative, present even when the
+    API hides metadata), then the API ``meta`` prompt, then Civitai's structured
+    metadata block."""
+    candidates: List[object] = []
+    if isinstance(embedded, dict):
+        candidates.append(embedded.get("prompt"))
+        civ_meta = embedded.get("civitaiMetadata")
+        if isinstance(civ_meta, dict):
+            candidates.append(civ_meta.get("prompt"))
+    meta = item.get("meta")
+    if isinstance(meta, dict):
+        candidates.append(meta.get("prompt"))
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate.strip():
+            return " ".join(candidate.split())
+    return None
+
+
+def _write_prompts_file(target_dir: Path, prompts: List[str], log: LogFunc) -> None:
+    """Append new prompts (one per line) to ``prompts.txt`` in ``target_dir``.
+
+    Existing lines are preserved and used to de-duplicate, so re-running a
+    download never adds the same prompt twice."""
+    if not prompts:
+        return
+    path = target_dir / "prompts.txt"
+    existing: List[str] = []
+    if path.exists():
+        try:
+            existing = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            existing = []
+    seen: Set[str] = set(existing)
+    added: List[str] = []
+    for prompt in prompts:
+        if prompt and prompt not in seen:
+            seen.add(prompt)
+            added.append(prompt)
+    if not added:
+        return
+    try:
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("\n".join(existing + added) + "\n")
+        log(f"Wrote {len(added)} new prompt(s) → {path}")
+    except OSError as exc:
+        log(f"Could not write prompts file {path}: {exc}")
 
 
 def _normalize_civitai_url(value: str) -> Optional[str]:
@@ -329,6 +541,7 @@ def download_image_items(
     options = state.downloads
     resolved = state.resolved
     resolved_extra = resolved.extra if resolved else {}
+    prompts_by_dir: Dict[Path, List[str]] = {}
 
     for item in items:
         model_id = _first_int(
@@ -445,26 +658,63 @@ def download_image_items(
         if not isinstance(image_url, str) or not image_url.startswith("http"):
             log(f"No image URL for {item_id}")
             continue
-        ext = os.path.splitext(urlparse_path(image_url))[-1] or ".jpg"
-        filename = f"{item_id}{ext}"
+        download_url = _civitai_original_url(image_url) if options.prefer_native_images else image_url
         if has_embedded_workflow:
             embedded_media_dir = paths["workflows"] / "embedded_media"
             _ensure_dir(embedded_media_dir)
             target_dir = embedded_media_dir
         else:
             target_dir = paths["images"]
-        target = target_dir / filename
-        if target.exists():
+        _ensure_dir(target_dir)
+        # The real format is only known after download (original=true can return
+        # a PNG even when the URL ends in .jpeg), so skip if any variant exists.
+        existing_image = next(
+            (target_dir / f"{item_id}{candidate}" for candidate in IMAGE_EXTENSIONS
+             if (target_dir / f"{item_id}{candidate}").exists()),
+            None,
+        )
+        if existing_image is not None:
+            if options.save_prompts:
+                prompt = _best_prompt(item, extract_embedded_metadata(existing_image))
+                if prompt:
+                    prompts_by_dir.setdefault(target_dir, []).append(prompt)
             continue
+        tmp_target = target_dir / f"{item_id}.part-img"
         try:
-            client.download_to_path(image_url, str(target))
-            counts["images"] += 1
-            destination = "workflow media" if has_embedded_workflow else "image"
-            log(f"Saved {destination} {filename} → {target.parent}")
-            if options.save_metadata:
-                _write_metadata(target, {key: item.get(key) for key in item.keys()})
+            client.download_to_path(download_url, str(tmp_target))
         except ApiError as exc:
             log(f"Image failed for {item_id}: {exc}")
+            tmp_target.unlink(missing_ok=True)
+            continue
+
+        with open(tmp_target, "rb") as handle:
+            head = handle.read(32)
+        ext = sniff_image_ext(head)
+        if not ext:
+            ext = os.path.splitext(urlparse_path(image_url))[-1].lower() or ".jpg"
+        filename = f"{item_id}{ext}"
+        target = target_dir / filename
+        os.replace(tmp_target, target)
+
+        counts["images"] += 1
+        destination = "workflow media" if has_embedded_workflow else "image"
+        log(f"Saved {destination} {filename} → {target.parent}")
+        embedded = extract_embedded_metadata(target) if (options.save_metadata or options.save_prompts) else None
+        if options.save_metadata:
+            payload = {key: item.get(key) for key in item.keys()}
+            if embedded:
+                payload["_embedded"] = embedded
+                if not (isinstance(item.get("meta"), dict) and item.get("meta")):
+                    log(f"Recovered embedded generation data for {filename}.")
+            _write_metadata(target, payload)
+        if options.save_prompts:
+            prompt = _best_prompt(item, embedded)
+            if prompt:
+                prompts_by_dir.setdefault(target_dir, []).append(prompt)
+
+    if options.save_prompts:
+        for folder, prompts in prompts_by_dir.items():
+            _write_prompts_file(folder, prompts, log)
 
     return counts
 
@@ -490,7 +740,7 @@ def download_version_assets(
         detail = client.get_model_version(version_id)
     except ApiError as exc:
         log(f"Version lookup failed for {version_id}: {exc}")
-        return 0
+        return 0, 0
 
     options = state.downloads
     resolved = state.resolved
@@ -549,6 +799,10 @@ def download_version_assets(
         showcase_media = _collect_showcase_images(detail, model_detail, version_entry)
 
     files = detail.get("files") or []
+    selected_file_ids = options.selected_file_ids
+    selected_id_set: Optional[Set[int]] = None
+    if selected_file_ids:
+        selected_id_set = {int(fid) for fid in selected_file_ids}
     saved_assets = 0
     eligible_files = 0
     skipped_existing = 0
@@ -557,6 +811,14 @@ def download_version_assets(
         download_url = file_info.get("downloadUrl")
         if not download_url:
             continue
+        path_ext_raw = os.path.splitext(urlparse_path(download_url))[-1].lower()
+        # When the user picked specific quantizations, restrict only the weight
+        # files to that selection. Previews/workflows/configs are left untouched
+        # so a precision choice never suppresses companion downloads.
+        if selected_id_set is not None and _is_model_file(file_info, path_ext_raw):
+            file_id = _first_int(file_info.get("id"))
+            if file_id is None or file_id not in selected_id_set:
+                continue
         metadata = file_info.get("metadata") or {}
         fmt = metadata.get("format")
         path_ext = os.path.splitext(urlparse_path(download_url))[-1]
@@ -605,21 +867,57 @@ def download_version_assets(
             target_dir = paths["images"]
 
         filename = f"{version_id}_{safe_name}{ext}"
+        # Tag weight files with their precision (e.g. bf16/fp8/int8) so multiple
+        # quantizations of the same version stay distinguishable on disk.
+        if _is_model_file(file_info, ext_lower):
+            fp_value = _first_str(metadata.get("fp")) if isinstance(metadata, dict) else None
+            if fp_value:
+                fp_slug = _slugify(fp_value)
+                if fp_slug and fp_slug not in safe_name.lower():
+                    filename = f"{version_id}_{safe_name}_{fp_slug}{ext}"
         target = target_dir / filename
         eligible_files += 1
-        if target.exists():
+
+        # Civitai reports sizeKB as a float (approximate) and a SHA256 for most
+        # model files. The exact byte count comes from the CDN at resolve time;
+        # sizeKB is only the fallback, with a little slack.
+        size_kb = metadata.get("sizeKB") if isinstance(metadata, dict) else None
+        if size_kb is None:
+            size_kb = file_info.get("sizeKB")
+        approx_size: Optional[int] = None
+        try:
+            if size_kb is not None:
+                approx_size = int(round(float(size_kb) * 1024))
+        except (TypeError, ValueError):
+            approx_size = None
+        hashes = file_info.get("hashes") if isinstance(file_info.get("hashes"), dict) else {}
+        sha256 = _first_str(hashes.get("SHA256"), hashes.get("sha256"))
+
+        spec = TransferSpec(
+            target=target,
+            resolve=lambda url=download_url: resolve_redirect(url, client.auth_headers(), session=client.session),
+            display_name=filename,
+            expected_size=approx_size,
+            expected_sha256=sha256,
+            size_tolerance=4096,
+        )
+        result = download_file(spec, state.transfer, log, session=client.session)
+        if result.status == "skipped":
             skipped_existing += 1
             continue
-
-        try:
-            client.download_to_path(download_url, str(target))
+        if result.status == "downloaded":
             saved_assets += 1
             descriptor = file_type or "asset"
-            log(f"Saved {descriptor} {filename} → {target.parent}")
+            log(f"Saved {descriptor} {filename} → {target.parent} [{result.engine}]")
             if options.save_metadata:
-                _write_metadata(target, file_info)
-        except ApiError as exc:
-            log(f"Asset failed for {filename}: {exc}")
+                if _is_model_file(file_info, ext_lower):
+                    payload = dict(file_info)
+                    payload["_variant"] = _variant_metadata_summary(file_info, filename, approx_size)
+                    _write_metadata(target, payload)
+                else:
+                    _write_metadata(target, file_info)
+        else:
+            log(f"Asset failed for {filename}: {result.message}")
 
     if eligible_files == 0:
         log(f"No downloadable asset files found for version {version_id}.")
@@ -645,11 +943,53 @@ def download_version_assets(
     return saved_assets, showcase_saved
 
 
+def download_hf_file(client: CivitaiClient, state: AppState, log: LogFunc) -> Dict[str, int]:
+    """Download a single Hugging Face file, flat into the chosen output directory."""
+    results = {"images": 0, "videos": 0, "assets": 0}
+    resolved = state.resolved
+    if resolved is None or resolved.entity_type != "hf_file":
+        return results
+    info = resolved.extra
+    resolve_url_value = str(info.get("resolve_url") or "")
+    filename = str(info.get("filename") or resolved.name or "download.bin")
+    if not resolve_url_value:
+        log("Hugging Face entity has no resolve URL; nothing to download.")
+        return results
+
+    root = Path(state.downloads.output_root).expanduser()
+    _ensure_dir(root)
+    target = root / filename
+    headers = hf_auth_headers(state.hf_token)
+
+    log(f"Hugging Face: {info.get('repo_id')} @ {info.get('revision')} / {info.get('path')}")
+    spec = TransferSpec(
+        target=target,
+        resolve=lambda: resolve_redirect(resolve_url_value, headers, session=client.session),
+        display_name=filename,
+        expected_size=info.get("size") if isinstance(info.get("size"), int) else None,
+        expected_sha256=info.get("sha256") if isinstance(info.get("sha256"), str) else None,
+    )
+    result = download_file(spec, state.transfer, log, session=client.session)
+    if result.status == "skipped":
+        log(f"{filename} already exists in {root} (size matches); nothing to do.")
+    elif result.status == "downloaded":
+        results["assets"] += 1
+        log(f"Saved {filename} → {root} [{result.engine}]")
+        if state.downloads.save_metadata:
+            _write_metadata(target, {key: value for key, value in info.items() if key != "resolve_url"} | {"source": "huggingface"})
+    else:
+        log(f"Download failed for {filename}: {result.message}")
+    return results
+
+
 def execute_downloads(client: CivitaiClient, state: AppState, log: LogFunc) -> Dict[str, int]:
     results = {"images": 0, "videos": 0, "assets": 0}
 
     resolved = state.resolved
     resolved_extra = resolved.extra if resolved else {}
+
+    if resolved is not None and resolved.entity_type == "hf_file":
+        return download_hf_file(client, state, log)
 
     needs_assets = state.downloads.grab_originals or state.downloads.grab_workflows or state.downloads.grab_videos
 

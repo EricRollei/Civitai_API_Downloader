@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
+from .transfer import TransferSettings
+
 
 @dataclass
 class ResolvedEntity:
@@ -50,16 +52,22 @@ class DownloadOptions:
     grab_videos: bool = True
     save_metadata: bool = True
     prefer_native_images: bool = True
+    save_prompts: bool = False
     max_items: int = 0
     output_root: str = "downloads"
+    # When set, only model-type files whose id is in this list are downloaded.
+    # None means "no restriction" (download every model file in the version).
+    selected_file_ids: Optional[List[int]] = None
 
 
 @dataclass
 class AppState:
     api_key: str = ""
+    hf_token: str = ""
     resolved: Optional[ResolvedEntity] = None
     filters: FilterState = field(default_factory=FilterState)
     downloads: DownloadOptions = field(default_factory=DownloadOptions)
+    transfer: TransferSettings = field(default_factory=TransferSettings)
 
     def reset_filters(self) -> None:
         self.filters = FilterState()

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 import webbrowser
 from queue import Queue, Empty
 from pathlib import Path
@@ -10,8 +11,9 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
 from .api_client import ApiError, CivitaiClient
-from .downloads import execute_downloads
+from .downloads import execute_downloads, describe_variant_files, summarize_version_files, format_size, _select_preferred_version
 from .state import AppState, DownloadOptions
+from .transfer import ARIA2_VERSION, TransferSettings, ensure_aria2, find_aria2
 from .url_resolver import resolve_url
 from .local_server import LocalURLServer
 
@@ -118,6 +120,9 @@ class CivitaiApp:
         # Track last resolved URL to detect changes
         self._last_resolved_url: str = ""
 
+        # File-variant selection chosen for the next download run (None = all)
+        self._pending_file_ids: Optional[List[int]] = None
+
         self._style = ttk.Style(self.root)
         # Try to use a modern theme if available
         available_themes = self._style.theme_names()
@@ -160,7 +165,7 @@ class CivitaiApp:
         # Recent directories feature
         self._recent_dirs: List[str] = []
         self._recent_dirs_frame: Optional[ttk.Frame] = None
-        self._max_recent_dirs = 5
+        self._max_recent_dirs = 10
         
         # Download queue for queuing multiple downloads
         self._download_queue: List[Dict[str, str]] = []  # List of {url, output_dir}
@@ -202,9 +207,16 @@ class CivitaiApp:
         self.include_workflows_var = tk.BooleanVar(value=False)
         self.save_metadata_var = tk.BooleanVar(value=True)
         self.native_images_var = tk.BooleanVar(value=True)
+        self.save_prompts_var = tk.BooleanVar(value=False)
 
         self.output_dir_var = tk.StringVar(value="downloads")
         self.model_base_path_var = tk.StringVar(value="")
+
+        # Hugging Face + large-file transfer settings
+        self.hf_token_var = tk.StringVar()
+        self.use_aria2_var = tk.BooleanVar(value=True)
+        self.aria2_path_var = tk.StringVar(value="")
+        self.aria2_connections_var = tk.StringVar(value="8")
 
         self.platform_vars = {value: tk.BooleanVar(value=False) for _, value in PLATFORM_CHOICES}
         self._tag_lookup: Dict[str, int] = {}
@@ -322,7 +334,7 @@ class CivitaiApp:
         ttk.Button(btn_frame, text="Open in Civitai", command=self._open_result_in_browser).pack(side=tk.RIGHT, padx=5)
 
     def _build_filters_section(self, parent: ttk.Frame) -> None:
-        url_frame = ttk.LabelFrame(parent, text="Quick Start - Paste a Civitai URL")
+        url_frame = ttk.LabelFrame(parent, text="Quick Start - Paste a Civitai or Hugging Face URL")
         url_frame.pack(fill=tk.X, padx=5, pady=(3, 5))
         
         # URL entry with placeholder-like hint
@@ -334,6 +346,7 @@ class CivitaiApp:
         btn_container.grid(row=0, column=1, padx=(0, 6), pady=6)
         
         ttk.Button(btn_container, text="Resolve", command=self._resolve_url, style="Accent.TButton").pack(side=tk.LEFT, padx=2)
+        ttk.Button(btn_container, text="Preview files", command=self._preview_files).pack(side=tk.LEFT, padx=2)
         self.download_button = ttk.Button(btn_container, text="⬇ Download", style="Download.TButton", command=self._start_download)
         self.download_button.pack(side=tk.LEFT, padx=2)
         ttk.Button(btn_container, text="Clear", command=self._clear_filters).pack(side=tk.LEFT, padx=2)
@@ -342,7 +355,7 @@ class CivitaiApp:
         
         hint_label = ttk.Label(
             url_frame, 
-            text="💡 Just paste a URL and click Download - auto-resolves!",
+            text="💡 Civitai model/version/image/user URLs, or a Hugging Face file link (…/blob/main/file.safetensors) - auto-resolves!",
             font=("Segoe UI", 8),
             foreground="#666666"
         )
@@ -399,6 +412,7 @@ class CivitaiApp:
         ttk.Checkbutton(dl_frame, text="Videos",      variable=self.include_videos_var).grid(    row=0, column=3, sticky="w", padx=3, pady=2)
         ttk.Checkbutton(dl_frame, text="Metadata",    variable=self.save_metadata_var).grid(     row=0, column=4, sticky="w", padx=3, pady=2)
         ttk.Checkbutton(dl_frame, text="Native size", variable=self.native_images_var).grid(     row=0, column=5, sticky="w", padx=3, pady=2)
+        ttk.Checkbutton(dl_frame, text="Prompts",     variable=self.save_prompts_var).grid(      row=0, column=6, sticky="w", padx=3, pady=2)
 
         tag_frame = ttk.LabelFrame(parent, text="Tags")
         tag_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=3)
@@ -499,6 +513,57 @@ class CivitaiApp:
             style="Recent.TButton"
         ).pack(side=tk.LEFT, padx=2)
         
+        # Hugging Face section
+        hf_frame = ttk.LabelFrame(self.settings_tab, text="Hugging Face")
+        hf_frame.pack(fill=tk.X, padx=10, pady=15)
+        ttk.Label(
+            hf_frame,
+            text="Optional. Needed only for gated repos (FLUX, some SD3/Wan releases). Create a read token at huggingface.co/settings/tokens",
+            font=("Segoe UI", 8),
+            foreground="#666666",
+        ).grid(row=0, column=0, columnspan=3, sticky="w", padx=10, pady=(10, 5))
+        ttk.Label(hf_frame, text="Access token:").grid(row=1, column=0, sticky="w", padx=10, pady=10)
+        hf_entry = ttk.Entry(hf_frame, textvariable=self.hf_token_var, width=60, show="*")
+        hf_entry.grid(row=1, column=1, padx=5, pady=10, sticky="we")
+        hf_frame.columnconfigure(1, weight=1)
+        self._show_hf_token = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            hf_frame,
+            text="Show token",
+            variable=self._show_hf_token,
+            command=lambda: hf_entry.config(show="" if self._show_hf_token.get() else "*"),
+        ).grid(row=2, column=1, sticky="w", padx=5, pady=(0, 10))
+
+        # Large-file transfer section
+        xfer_frame = ttk.LabelFrame(self.settings_tab, text="Large-file downloads (resume + verify)")
+        xfer_frame.pack(fill=tk.X, padx=10, pady=15)
+        ttk.Label(
+            xfer_frame,
+            text=(
+                "Model files download to a .part file, resume automatically after connection drops, "
+                "re-fetch expired links, and are size/SHA-256 checked before being renamed into place.\n"
+                "aria2 adds multi-connection downloads; without it a built-in single-connection resumable downloader is used."
+            ),
+            font=("Segoe UI", 8),
+            foreground="#666666",
+            justify=tk.LEFT,
+        ).grid(row=0, column=0, columnspan=4, sticky="w", padx=10, pady=(10, 5))
+        ttk.Checkbutton(
+            xfer_frame,
+            text="Use aria2 when available (auto-installs into the app's bin folder on first use)",
+            variable=self.use_aria2_var,
+        ).grid(row=1, column=0, columnspan=4, sticky="w", padx=10, pady=(0, 6))
+        ttk.Label(xfer_frame, text="aria2c path:").grid(row=2, column=0, sticky="w", padx=10, pady=6)
+        ttk.Entry(xfer_frame, textvariable=self.aria2_path_var, width=50).grid(row=2, column=1, padx=5, pady=6, sticky="we")
+        ttk.Button(xfer_frame, text="Browse", command=self._browse_aria2_path).grid(row=2, column=2, padx=(5, 2), pady=6)
+        ttk.Button(xfer_frame, text="Detect / Install", command=self._detect_aria2).grid(row=2, column=3, padx=(2, 10), pady=6)
+        ttk.Label(xfer_frame, text="Connections per file:").grid(row=3, column=0, sticky="w", padx=10, pady=6)
+        ttk.Spinbox(xfer_frame, from_=1, to=16, width=5, textvariable=self.aria2_connections_var).grid(row=3, column=1, sticky="w", padx=5, pady=6)
+        self._aria2_status_label = ttk.Label(xfer_frame, text="", font=("Segoe UI", 8), foreground="#888888")
+        self._aria2_status_label.grid(row=4, column=0, columnspan=4, sticky="w", padx=10, pady=(0, 10))
+        xfer_frame.columnconfigure(1, weight=1)
+        self.root.after(200, self._refresh_aria2_status)
+
         # Chrome Extension section
         extension_frame = ttk.LabelFrame(self.settings_tab, text="Chrome Extension Integration")
         extension_frame.pack(fill=tk.X, padx=10, pady=15)
@@ -539,6 +604,7 @@ class CivitaiApp:
 A tool for downloading images and metadata from Civitai.
 
 • Paste a Civitai URL and click Download
+• Paste a Hugging Face file link to download it (resumable, verified)
 • Use filters to search for specific content
 • Recent directories are saved for quick access
 • Use Chrome extension to send URLs directly (Ctrl+Shift+D)
@@ -552,6 +618,40 @@ Settings are automatically saved when you close the app."""
             justify=tk.LEFT
         ).pack(padx=10, pady=10, anchor="w")
     
+    def _browse_aria2_path(self) -> None:
+        path = filedialog.askopenfilename(
+            title="Locate aria2c",
+            filetypes=[("aria2c", "aria2c.exe aria2c"), ("All files", "*.*")],
+        )
+        if path:
+            self.aria2_path_var.set(path)
+            self._refresh_aria2_status()
+
+    def _refresh_aria2_status(self) -> None:
+        if not hasattr(self, "_aria2_status_label"):
+            return
+        found = find_aria2(self.aria2_path_var.get().strip())
+        if found:
+            self._aria2_status_label.config(text=f"● aria2 found: {found}", foreground="#2e7d32")
+        else:
+            self._aria2_status_label.config(
+                text="● aria2 not found - it will be fetched automatically on the first large download, or click Detect / Install.",
+                foreground="#888888",
+            )
+
+    def _detect_aria2(self) -> None:
+        settings = TransferSettings(use_aria2=True, aria2_path=self.aria2_path_var.get().strip(), auto_fetch_aria2=True)
+
+        def _worker() -> None:
+            found = ensure_aria2(settings, self._queue_log)
+            if found:
+                self._queue_log(f"aria2 ready: {found}")
+            else:
+                self._queue_log("aria2 unavailable; the built-in resumable downloader will be used.")
+            self._queue_action("aria2_status", {})
+
+        threading.Thread(target=_worker, daemon=True).start()
+
     def _browse_model_base_path(self) -> None:
         """Browse for model base path."""
         current = self.model_base_path_var.get().strip()
@@ -595,7 +695,7 @@ Settings are automatically saved when you close the app."""
         """Show a popup for quick download with location selection."""
         popup = tk.Toplevel(self.root)
         popup.title("Quick Download")
-        popup.geometry("550x420")
+        popup.geometry("550x520")
         popup.resizable(False, False)
         popup.transient(self.root)
         popup.grab_set()
@@ -603,8 +703,8 @@ Settings are automatically saved when you close the app."""
         # Center on screen
         popup.update_idletasks()
         x = (popup.winfo_screenwidth() - 550) // 2
-        y = (popup.winfo_screenheight() - 420) // 2
-        popup.geometry(f"550x420+{x}+{y}")
+        y = (popup.winfo_screenheight() - 520) // 2
+        popup.geometry(f"550x520+{x}+{y}")
         
         # Make it topmost
         popup.attributes('-topmost', True)
@@ -654,7 +754,7 @@ Settings are automatically saved when you close the app."""
             recent_frame.columnconfigure(0, weight=1)
             recent_frame.columnconfigure(1, weight=1)
             
-            for idx, dir_path in enumerate(self._recent_dirs[:6]):  # Show up to 6 recent dirs
+            for idx, dir_path in enumerate(self._recent_dirs[:10]):  # Show up to 10 recent dirs
                 short_name = self._get_short_dir_name(dir_path)
                 # Truncate if too long
                 if len(short_name) > 28:
@@ -752,8 +852,8 @@ Settings are automatically saved when you close the app."""
             ).pack(side=tk.LEFT)
             return
         
-        # Create a button for each recent directory
-        for idx, dir_path in enumerate(self._recent_dirs):
+        # Create a button for each recent directory (compact strip: cap to keep one row)
+        for idx, dir_path in enumerate(self._recent_dirs[:5]):
             # Get a short display name (last folder name or drive)
             display_name = self._get_short_dir_name(dir_path)
             btn = ttk.Button(
@@ -830,7 +930,7 @@ Settings are automatically saved when you close the app."""
         url = self.url_var.get().strip()
         if not url:
             if show_errors:
-                messagebox.showinfo("Resolve", "Enter a Civitai URL first.")
+                messagebox.showinfo("Resolve", "Enter a Civitai or Hugging Face URL first.")
             return False
         
         self.status_var.set("Resolving URL…")
@@ -839,21 +939,19 @@ Settings are automatically saved when you close the app."""
         
         for attempt in range(1, max_retries + 1):
             try:
-                entity = resolve_url(url, self.client)
+                entity = resolve_url(url, self.client, hf_token=self.hf_token_var.get().strip())
                 if entity:
                     break
             except ApiError as exc:
                 last_error = exc
                 if attempt < max_retries:
                     self._queue_log(f"Resolve attempt {attempt} failed, retrying...")
-                    import time
                     time.sleep(0.5)  # Brief pause before retry
                 continue
             except Exception as exc:
                 last_error = exc
                 if attempt < max_retries:
                     self._queue_log(f"Resolve attempt {attempt} failed, retrying...")
-                    import time
                     time.sleep(0.5)
                 continue
         
@@ -1164,7 +1262,15 @@ Settings are automatically saved when you close the app."""
         # Add current output directory to recent list
         if current_output:
             self._add_recent_dir(current_output)
-        
+
+        # Let the user choose which weight-file variant(s) to pull when a version
+        # exposes several quantizations (fp16/fp8/int8/…). Returns False if the
+        # user cancels, in which case we abort this run and move to the queue.
+        if not self._select_variant_files_if_needed():
+            self._queue_log("Download cancelled at variant selection.")
+            self._process_next_in_queue()
+            return
+
         self._apply_ui_to_state()
         self._update_queue_status()
         if self.download_button is not None:
@@ -1172,7 +1278,284 @@ Settings are automatically saved when you close the app."""
         self._queue_log("Starting download run...")
         self._download_thread = threading.Thread(target=self._run_download_worker, daemon=True)
         self._download_thread.start()
-    
+
+    def _preferred_version_id_from_state(self) -> Optional[int]:
+        """Resolve the version id the downloader will default to for the current
+        model, mirroring execute_downloads' preferred-version selection."""
+        resolved = self.state.resolved
+        extra = resolved.extra if resolved else {}
+        model_detail = extra.get("model") if isinstance(extra, dict) else None
+        versions = model_detail.get("modelVersions") if isinstance(model_detail, dict) else None
+        if not versions:
+            model_id = self._safe_int(self.model_id_var.get())
+            if model_id is None and resolved is not None:
+                model_id = resolved.model_id
+            if model_id is None:
+                return None
+            try:
+                model_detail = self.client.get_model(int(model_id))
+            except Exception:  # noqa: BLE001 - treat lookup failure as "no info"
+                return None
+            versions = model_detail.get("modelVersions") if isinstance(model_detail, dict) else None
+        if not versions:
+            return None
+        preferred = _select_preferred_version(versions)
+        if not isinstance(preferred, dict):
+            return None
+        try:
+            return int(preferred.get("id"))
+        except (TypeError, ValueError):
+            return None
+
+    def _target_version_detail(self) -> Tuple[Optional[int], Optional[Dict[str, Any]]]:
+        """Resolve the version id the next run targets plus its API detail.
+
+        Reuses the version payload the resolver already fetched when possible so
+        both the variant picker and the file preview avoid redundant API calls.
+        Returns (None, None) when no version can be determined or the lookup fails."""
+        resolved = self.state.resolved
+        extra = resolved.extra if isinstance(getattr(resolved, "extra", None), dict) else {}
+
+        version_id = self._safe_int(self.version_id_var.get())
+        if version_id is None and resolved is not None:
+            version_id = resolved.model_version_id
+        if version_id is None:
+            version_id = self._preferred_version_id_from_state()
+        if version_id is None:
+            return None, None
+
+        cached_version = extra.get("modelVersion")
+        if isinstance(cached_version, dict) and cached_version.get("files"):
+            try:
+                cached_id = int(cached_version.get("id"))
+            except (TypeError, ValueError):
+                cached_id = None
+            if cached_id == int(version_id):
+                return version_id, cached_version
+        try:
+            return version_id, self.client.get_model_version(int(version_id))
+        except Exception as exc:  # noqa: BLE001 - don't block on API hiccups
+            self._queue_log(f"Could not inspect version files ({exc}).")
+            return version_id, None
+
+    def _select_variant_files_if_needed(self) -> bool:
+        """Populate self._pending_file_ids for the upcoming run.
+
+        Returns False only when the user cancels the variant picker, signalling
+        the caller to abort this download."""
+        self._pending_file_ids = None
+        resolved = self.state.resolved
+        extra = resolved.extra if isinstance(getattr(resolved, "extra", None), dict) else {}
+
+        # A pasted download link may pin an explicit fileId (e.g. a chosen
+        # quantization). Honor it directly without prompting.
+        explicit_file_id = extra.get("fileId")
+        if isinstance(explicit_file_id, int):
+            self._pending_file_ids = [explicit_file_id]
+            self._queue_log(f"Using the specific file (id {explicit_file_id}) from the pasted link.")
+            return True
+
+        # Only matters when weight files are actually being fetched.
+        if not self.include_originals_var.get():
+            return True
+
+        version_id, detail = self._target_version_detail()
+        if version_id is None or not isinstance(detail, dict):
+            return True
+
+        variants = describe_variant_files(detail)
+        if len(variants) <= 1:
+            return True  # single (or no) weight file — nothing to choose
+
+        # Pin the version so the worker downloads exactly what the user picked.
+        if not self.version_id_var.get().strip():
+            self.version_id_var.set(str(version_id))
+
+        chosen = self._prompt_variant_selection(variants, detail.get("name") or str(version_id))
+        if chosen is None:
+            return False
+        self._pending_file_ids = chosen
+        names = ", ".join(
+            str(v.get("fp") or v.get("name") or v.get("id"))
+            for v in variants if v.get("id") in chosen
+        )
+        self._queue_log(f"Selected {len(chosen)} file variant(s): {names}")
+        return True
+
+    def _prompt_variant_selection(self, variants: List[Dict[str, Any]], version_name: str) -> Optional[List[int]]:
+        """Modal multi-select picker for a version's quantized weight files.
+
+        Returns the chosen file ids, or None if the user cancels."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Select file variants")
+        dialog.transient(self.root)
+        dialog.resizable(False, True)
+
+        ttk.Label(
+            dialog,
+            text=f"\u201c{version_name}\u201d offers several files (e.g. different precisions).\n"
+                 "Choose which one(s) to download:",
+            font=("Segoe UI", 10, "bold"),
+            wraplength=460,
+            justify="left",
+        ).pack(anchor="w", padx=12, pady=(12, 8))
+
+        body = ttk.Frame(dialog)
+        body.pack(fill=tk.BOTH, expand=True, padx=12)
+
+        # Pre-check the smallest *primary* weight file (the main model/diffusion
+        # weights) as a sensible default; fall back to the smallest overall.
+        primary_sizes = [v.get("size_bytes") for v in variants
+                         if v.get("is_primary") and isinstance(v.get("size_bytes"), int)]
+        all_sizes = [v.get("size_bytes") for v in variants if isinstance(v.get("size_bytes"), int)]
+        default_size = min(primary_sizes) if primary_sizes else (min(all_sizes) if all_sizes else None)
+        default_used = False
+
+        vars_and_ids: List[Tuple[tk.BooleanVar, int]] = []
+        for variant in variants:
+            fid = variant.get("id")
+            if not isinstance(fid, int):
+                continue
+            descriptor_bits = [str(variant[k]) for k in ("fp", "format", "size_label") if variant.get(k)]
+            descriptor = " / ".join(descriptor_bits) or (variant.get("name") or f"file {fid}")
+            type_label = str(variant.get("type") or "").strip()
+            if type_label:
+                descriptor = f"{type_label}  \u2014  {descriptor}"
+            size_bytes = variant.get("size_bytes")
+            size_txt = f"{size_bytes / (1024 ** 3):.2f} GB" if isinstance(size_bytes, int) else "size unknown"
+            label = f"{descriptor}    \u2022    {size_txt}"
+            is_default = (
+                not default_used
+                and default_size is not None
+                and size_bytes == default_size
+                and (variant.get("is_primary") or not primary_sizes)
+            )
+            if is_default:
+                default_used = True
+            bv = tk.BooleanVar(value=is_default)
+            ttk.Checkbutton(body, text=label, variable=bv).pack(anchor="w", pady=2)
+            vars_and_ids.append((bv, fid))
+
+        result: Dict[str, Optional[List[int]]] = {"ids": None}
+
+        def _confirm() -> None:
+            chosen = [fid for bv, fid in vars_and_ids if bv.get()]
+            if not chosen:
+                messagebox.showinfo("Select files", "Pick at least one file, or press Cancel.", parent=dialog)
+                return
+            result["ids"] = chosen
+            dialog.destroy()
+
+        def _cancel() -> None:
+            result["ids"] = None
+            dialog.destroy()
+
+        btns = ttk.Frame(dialog)
+        btns.pack(fill=tk.X, padx=12, pady=12)
+        ttk.Button(btns, text="Download selected", style="Accent.TButton", command=_confirm).pack(side=tk.RIGHT, padx=4)
+        ttk.Button(btns, text="Cancel", command=_cancel).pack(side=tk.RIGHT, padx=4)
+
+        dialog.protocol("WM_DELETE_WINDOW", _cancel)
+        dialog.update_idletasks()
+        dialog.grab_set()
+        self.root.wait_window(dialog)
+        return result["ids"]
+
+    def _preview_files(self) -> None:
+        """Show the files (and their sizes) a download run would fetch, without
+        downloading anything — handy before committing to multi-GB checkpoints."""
+        url = self.url_var.get().strip()
+        if url and url != self._last_resolved_url:
+            self.status_var.set("Resolving URL…")
+            if not self._resolve_url(max_retries=3, show_errors=True):
+                return
+
+        version_id, detail = self._target_version_detail()
+        if version_id is None or not isinstance(detail, dict):
+            messagebox.showinfo(
+                "Preview files",
+                "Could not determine a model version to preview. Resolve a model or "
+                "version URL, or enter a Version ID first.",
+            )
+            return
+
+        rows = summarize_version_files(detail)
+        if not rows:
+            messagebox.showinfo("Preview files", "This version has no downloadable files.")
+            return
+        self._show_file_preview(detail.get("name") or str(version_id), version_id, rows)
+
+    def _show_file_preview(self, version_name: str, version_id: int, rows: List[Dict[str, Any]]) -> None:
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Files in this version")
+        dialog.transient(self.root)
+        dialog.resizable(True, True)
+
+        ttk.Label(
+            dialog,
+            text=f"\u201c{version_name}\u201d (version {version_id}) contains these files:",
+            font=("Segoe UI", 10, "bold"),
+            wraplength=560,
+            justify="left",
+        ).pack(anchor="w", padx=12, pady=(12, 8))
+
+        columns = ("type", "precision", "format", "size", "name")
+        tree = ttk.Treeview(dialog, columns=columns, show="headings", height=min(14, max(4, len(rows))))
+        headings = {"type": "Type", "precision": "Precision", "format": "Format", "size": "Size", "name": "File name"}
+        widths = {"type": 90, "precision": 80, "format": 90, "size": 90, "name": 320}
+        for col in columns:
+            tree.heading(col, text=headings[col])
+            anchor = tk.E if col == "size" else tk.W
+            tree.column(col, width=widths[col], anchor=anchor, stretch=(col == "name"))
+
+        for row in rows:
+            tag = "weight" if row.get("is_model") else "other"
+            tree.insert(
+                "", tk.END,
+                values=(
+                    (row.get("type") or "").title() or "—",
+                    row.get("fp") or "—",
+                    row.get("format") or "—",
+                    format_size(row.get("size_bytes")),
+                    row.get("name") or "—",
+                ),
+                tags=(tag,),
+            )
+        tree.tag_configure("weight", background="#eef5ff")
+
+        scroll = ttk.Scrollbar(dialog, orient=tk.VERTICAL, command=tree.yview)
+        tree.configure(yscrollcommand=scroll.set)
+        tree_frame = ttk.Frame(dialog)
+        tree_frame.pack(fill=tk.BOTH, expand=True, padx=12)
+        tree.pack(in_=tree_frame, side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scroll.pack(in_=tree_frame, side=tk.RIGHT, fill=tk.Y)
+
+        weight_total = sum(r["size_bytes"] for r in rows if r.get("is_model") and isinstance(r.get("size_bytes"), int))
+        all_total = sum(r["size_bytes"] for r in rows if isinstance(r.get("size_bytes"), int))
+        summary = (
+            f"Weight files: {sum(1 for r in rows if r.get('is_model'))}  "
+            f"({format_size(weight_total)})      "
+            f"All files total: {format_size(all_total)}"
+        )
+        ttk.Label(dialog, text=summary, font=("Segoe UI", 9)).pack(anchor="w", padx=12, pady=(8, 0))
+        ttk.Label(
+            dialog,
+            text="Tip: weight files are highlighted. When several exist you'll be asked "
+                 "to choose which to download.",
+            font=("Segoe UI", 8),
+            foreground="#666666",
+            wraplength=560,
+            justify="left",
+        ).pack(anchor="w", padx=12, pady=(2, 0))
+
+        btns = ttk.Frame(dialog)
+        btns.pack(fill=tk.X, padx=12, pady=12)
+        ttk.Button(btns, text="Close", command=dialog.destroy).pack(side=tk.RIGHT, padx=4)
+
+        dialog.update_idletasks()
+        dialog.grab_set()
+        self.root.wait_window(dialog)
+
     def _update_queue_status(self) -> None:
         """Update status to show queue count if any."""
         if self._download_queue:
@@ -1234,8 +1617,18 @@ Settings are automatically saved when you close the app."""
             prefer_native_images=self.native_images_var.get(),
             max_items=max_items or 0,
             output_root=self.output_dir_var.get().strip() or "downloads",
+            selected_file_ids=self._pending_file_ids,
+            save_prompts=self.save_prompts_var.get(),
         )
         self.state.downloads = downloads
+
+        self.state.hf_token = self.hf_token_var.get().strip()
+        connections = self._safe_int(self.aria2_connections_var.get()) or 8
+        self.state.transfer = TransferSettings(
+            use_aria2=self.use_aria2_var.get(),
+            aria2_path=self.aria2_path_var.get().strip(),
+            connections=max(1, min(16, connections)),
+        )
 
     def _run_download_worker(self) -> None:
         success = False
@@ -1289,6 +1682,9 @@ Settings are automatically saved when you close the app."""
         else:
             action, data = payload, None
 
+        if action == "aria2_status":
+            self._refresh_aria2_status()
+            return
         if action == "download_finished" and self.download_button is not None:
             self.download_button.config(text="⬇ Download", style="Download.TButton", state=tk.NORMAL)
             if data and not data.get("success", True):
@@ -1376,6 +1772,10 @@ Settings are automatically saved when you close the app."""
         self.sort_var.set(saved_sort)
         self.output_dir_var.set(data.get("output", "downloads"))
         self.model_base_path_var.set(data.get("model_base_path", ""))
+        self.hf_token_var.set(data.get("hf_token", ""))
+        self.use_aria2_var.set(bool(data.get("use_aria2", True)))
+        self.aria2_path_var.set(data.get("aria2_path", ""))
+        self.aria2_connections_var.set(str(data.get("aria2_connections", "8")))
         self.max_items_var.set(str(data.get("max_items", "0")))
         normalized_models: List[str] = []
         for entry in data.get("base_models", []):
@@ -1422,6 +1822,10 @@ Settings are automatically saved when you close the app."""
             "sort": self.sort_var.get(),
             "output": self.output_dir_var.get().strip(),
             "model_base_path": self.model_base_path_var.get().strip(),
+            "hf_token": self.hf_token_var.get().strip(),
+            "use_aria2": self.use_aria2_var.get(),
+            "aria2_path": self.aria2_path_var.get().strip(),
+            "aria2_connections": self.aria2_connections_var.get().strip(),
             "max_items": self.max_items_var.get().strip(),
             "base_models": self._collect_base_models(),
             "tags": {str(k): v for k, v in self._selected_tags.items()},

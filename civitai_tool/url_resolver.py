@@ -1,10 +1,14 @@
 from __future__ import annotations
 
-from typing import Optional
-from urllib.parse import parse_qs, urlparse
+from typing import Dict, Optional
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
-from .api_client import CivitaiClient
+from .api_client import ApiError, CivitaiClient
 from .state import ResolvedEntity
+from .transfer import TransferError, resolve_redirect
+
+HF_HOSTS = {"huggingface.co", "www.huggingface.co", "hf.co"}
+HF_REPO_TYPE_PREFIXES = {"datasets": "dataset", "spaces": "space"}
 
 
 def _extract_numeric(segment: str) -> Optional[int]:
@@ -12,9 +16,101 @@ def _extract_numeric(segment: str) -> Optional[int]:
     return int(cleaned) if cleaned.isdigit() else None
 
 
-def resolve_url(raw_url: str, client: CivitaiClient) -> Optional[ResolvedEntity]:
+def _extract_file_id(query_params: Dict[str, list]) -> Optional[int]:
+    """Pull a specific fileId out of a Civitai download/model URL query string.
+
+    Civitai appends ``?fileId=<id>`` to download links when a version exposes
+    several files (e.g. different quantizations like fp16/fp8/int8). Capturing it
+    lets the downloader fetch only the chosen variant instead of every file.
+    """
+    values = query_params.get("fileId")
+    if not values:
+        return None
+    try:
+        return int(str(values[0]).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def hf_auth_headers(hf_token: str) -> Dict[str, str]:
+    token = (hf_token or "").strip()
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
+def parse_hf_url(raw_url: str) -> Optional[Dict[str, str]]:
+    """
+    Understand the single-file URL shapes Hugging Face produces:
+
+        https://huggingface.co/<org>/<repo>/blob/<rev>/<path/to/file>
+        https://huggingface.co/<org>/<repo>/resolve/<rev>/<path/to/file>[?download=true]
+        https://huggingface.co/datasets/<org>/<repo>/resolve/<rev>/<path>
+        https://huggingface.co/<canonical-repo>/blob/<rev>/<path>       (single-segment repo ids)
+
+    Returns None if the host isn't Hugging Face; raises ApiError for an HF URL
+    that doesn't point at a file (repo root, tree view).
+    """
+    parsed = urlparse(raw_url.strip())
+    if not parsed.scheme:
+        parsed = urlparse(f"https://{raw_url.strip()}")
+    if parsed.netloc.lower() not in HF_HOSTS:
+        return None
+    segments = [unquote(s) for s in parsed.path.split("/") if s]
+    repo_type = "model"
+    if segments and segments[0] in HF_REPO_TYPE_PREFIXES:
+        repo_type = HF_REPO_TYPE_PREFIXES[segments[0]]
+        segments = segments[1:]
+
+    # Find the blob/resolve marker; everything before it is the repo id.
+    marker_index = next((i for i, seg in enumerate(segments) if seg in {"blob", "resolve"}), None)
+    if marker_index is None or marker_index == 0 or len(segments) < marker_index + 3:
+        raise ApiError(
+            "That Hugging Face link points at a repo or folder, not a file. "
+            "Open the file in the repo's Files tab and paste that link (…/blob/main/<file>)."
+        )
+    repo_id = "/".join(segments[:marker_index])
+    revision = segments[marker_index + 1]
+    file_path = "/".join(segments[marker_index + 2 :])
+    if not file_path:
+        raise ApiError("Hugging Face URL has no file path.")
+    type_prefix = {"dataset": "datasets/", "space": "spaces/"}.get(repo_type, "")
+    resolve_url_value = (
+        f"https://huggingface.co/{type_prefix}{quote(repo_id)}/resolve/{quote(revision)}/{quote(file_path)}"
+    )
+    return {
+        "repo_id": repo_id,
+        "repo_type": repo_type,
+        "revision": revision,
+        "path": file_path,
+        "filename": file_path.rsplit("/", 1)[-1],
+        "resolve_url": resolve_url_value,
+        "page_url": f"https://huggingface.co/{type_prefix}{repo_id}/blob/{revision}/{file_path}",
+    }
+
+
+def resolve_hf_url(raw_url: str, hf_token: str = "") -> Optional[ResolvedEntity]:
+    info = parse_hf_url(raw_url)
+    if info is None:
+        return None
+    # One request to the origin: follows the redirect, learns exact size + LFS sha256,
+    # and surfaces 401/403 for gated repos right away instead of at download time.
+    try:
+        source = resolve_redirect(info["resolve_url"], hf_auth_headers(hf_token))
+    except TransferError as exc:
+        raise ApiError(str(exc)) from exc
+    extra: Dict[str, object] = dict(info)
+    extra["size"] = source.size
+    extra["sha256"] = source.sha256
+    identifier = f"{info['repo_id']}@{info['revision']}:{info['path']}"
+    return ResolvedEntity(entity_type="hf_file", identifier=identifier, name=info["filename"], extra=extra)
+
+
+def resolve_url(raw_url: str, client: CivitaiClient, hf_token: str = "") -> Optional[ResolvedEntity]:
     if not raw_url:
         return None
+
+    hf_entity = resolve_hf_url(raw_url, hf_token)
+    if hf_entity is not None:
+        return hf_entity
 
     parsed = urlparse(raw_url.strip())
     if not parsed.scheme:
@@ -33,6 +129,9 @@ def resolve_url(raw_url: str, client: CivitaiClient) -> Optional[ResolvedEntity]
             return None
         detail = client.get_model(model_id)
         extra = {"modelId": model_id, "modelName": detail.get("name"), "model": detail}
+        file_id = _extract_file_id(query_params)
+        if file_id is not None:
+            extra["fileId"] = file_id
         version_id = None
         if "modelVersionId" in query_params:
             try:
@@ -59,6 +158,9 @@ def resolve_url(raw_url: str, client: CivitaiClient) -> Optional[ResolvedEntity]
             "modelVersion": version_detail,
             "modelVersionName": version_detail.get("name"),
         }
+        file_id = _extract_file_id(query_params)
+        if file_id is not None:
+            extra["fileId"] = file_id
         model_info = version_detail.get("model")
         if isinstance(model_info, dict):
             extra["modelId"] = model_info.get("id")
@@ -77,6 +179,9 @@ def resolve_url(raw_url: str, client: CivitaiClient) -> Optional[ResolvedEntity]
             "modelVersion": version_detail,
             "modelVersionName": version_detail.get("name"),
         }
+        file_id = _extract_file_id(query_params)
+        if file_id is not None:
+            extra["fileId"] = file_id
         model_info = version_detail.get("model")
         if isinstance(model_info, dict):
             extra["modelId"] = model_info.get("id")

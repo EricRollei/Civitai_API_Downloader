@@ -1,1 +1,13 @@
-requests
+# Python dependencies for Civitai Desktop Helper.
+# Only `requests` is required at install time; a lower bound keeps a modern,
+# security-patched release while allowing in-range updates.
+requests>=2.32,<3
+
+# Optional, fetched automatically at runtime (not a pip dependency):
+#   aria2c - multi-connection/resumable downloader. If it isn't on PATH or in
+#            bin/, the app downloads the official Windows build into bin/ on
+#            first use. Untick "Use aria2" in Settings to use the built-in
+#            single-connection resumable downloader instead.
+#
+# The GUI uses tkinter, which ships with the standard CPython installer on
+# Windows (no pip install needed).
