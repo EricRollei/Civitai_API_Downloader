@@ -12,5 +12,9 @@
   "base_models": [],
   "tags": {},
   "recent_dirs": [],
-  "extension_server_enabled": true
+  "extension_server_enabled": true,
+  "hf_token": "",
+  "use_aria2": true,
+  "aria2_path": "",
+  "aria2_connections": "8"
 }

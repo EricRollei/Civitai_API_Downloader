@@ -28,8 +28,8 @@ chrome.commands.onCommand.addListener(async (command) => {
 
 // Function to send URL to desktop app
 async function sendUrlToDesktop(url) {
-  // Only send Civitai URLs
-  if (!url.includes("civitai.com")) {
+  // Only send Civitai URLs (civitai.com, civitai.red, etc.)
+  if (!url.includes("civitai.com") && !url.includes("civitai.red")) {
     console.log("Not a Civitai URL, ignoring:", url);
     return { success: false, error: "Not a Civitai URL" };
   }

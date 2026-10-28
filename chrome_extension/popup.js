@@ -17,7 +17,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   const content = document.getElementById("content");
   const notCivitai = document.getElementById("notCivitai");
   
-  const isCivitaiUrl = currentUrl.includes("civitai.com");
+  const isCivitaiUrl = currentUrl.includes("civitai.com") || currentUrl.includes("civitai.red");
   
   if (isCivitaiUrl) {
     urlText.textContent = currentUrl;

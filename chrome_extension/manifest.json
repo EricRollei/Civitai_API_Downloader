@@ -20,8 +20,8 @@
   "commands": {
     "send-to-desktop": {
       "suggested_key": {
-        "default": "Alt+Shift+C",
-        "mac": "Alt+Shift+C"
+        "default": "Ctrl+Shift+K",
+        "mac": "Command+Shift+K"
       },
       "description": "Send current Civitai page to Desktop Helper"
     }
