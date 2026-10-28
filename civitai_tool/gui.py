@@ -16,6 +16,7 @@ from .state import AppState, DownloadOptions
 from .transfer import ARIA2_VERSION, TransferSettings, ensure_aria2, find_aria2
 from .url_resolver import resolve_url
 from .local_server import LocalURLServer
+from . import theme
 
 SETTINGS_FILE = Path(__file__).with_name("settings.json")
 
@@ -29,74 +30,166 @@ SORT_OPTIONS = [
 ]
 
 PLATFORM_CHOICES: List[Tuple[str, str]] = [
-    ("Flux 1D (Dev)", "FLUX.1 [dev]"),
-    ("Flux 1S (Schnell)", "FLUX.1 [schnell]"),
-    ("Flux 1 Pro", "FLUX.1 [pro]"),
-    ("Flux 2", "Flux 2"),
-    ("Flux Schnell", "Flux Schnell"),
-    ("Flux Dev", "Flux Dev"),
-    ("Illustrious", "Illustrious"),
-    ("Illustrious XL", "Illustrious XL"),
-    ("Pony", "Pony"),
-    ("Pony Diffusion XL", "Pony Diffusion XL"),
+    ("Flux.1 Dev", "Flux.1 D"),
+    ("Flux.1 Schnell", "Flux.1 S"),
+    ("Flux.1 Krea", "Flux.1 Krea"),
+    ("Flux.1 Kontext", "Flux.1 Kontext"),
+    ("Flux.2 Dev", "Flux.2 D"),
     ("SD 1.5", "SD 1.5"),
+    ("SD 3.5", "SD 3.5"),
     ("SDXL 1.0", "SDXL 1.0"),
-    ("SDXL Turbo", "SDXL Turbo"),
-    ("SDXL Lightning", "SDXL Lightning"),
-    ("SDXL Refiner", "SDXL Refiner"),
-    ("Z-Image-Turbo", "Z-Image-Turbo"),
-    ("Qwen 2D", "Qwen 2D"),
-    ("Qwen 2.5D", "Qwen 2.5D"),
-    ("Wan 2.2", "Wan 2.2"),
-    ("Wan 1.3", "Wan 1.3"),
+    ("Pony", "Pony"),
+    ("Pony V7", "Pony V7"),
+    ("Illustrious", "Illustrious"),
+    ("NoobAI", "NoobAI"),
+    ("Chroma", "Chroma"),
+    ("Anima", "Anima"),
+    ("Qwen", "Qwen"),
+    ("Qwen 2", "Qwen 2"),
+    ("Qwen 2.1", "Qwen 2.1"),
+    ("MOSS Image", "MOSS Image"),
+    ("Krea 2", "Krea 2"),
+    ("Krea 2 Turbo", "Krea 2 Turbo"),
+    ("HiDream", "HiDream"),
+    ("Z-Image Turbo", "ZImageTurbo"),
+    ("Wan Video 2.2 T2V", "Wan Video 2.2 T2V-A14B"),
 ]
 
+# Offline fallback for the live /api/v1/enums BaseModel list. Used only when the
+# enums endpoint cannot be reached; the live list always takes precedence.
+BASE_MODELS_FALLBACK: List[str] = [
+    "Anima", "AuraFlow", "Chroma", "CogVideoX", "Ernie", "Flux.1 S", "Flux.1 D",
+    "Flux.1 Krea", "Flux.1 Kontext", "Flux.2 D", "Flux.2 Klein 9B",
+    "Flux.2 Klein 9B-base", "Flux.2 Klein 4B", "Flux.2 Klein 4B-base", "Flux.3",
+    "Flux.3 Klein", "Flux.3 Klein-base", "MOSS Image", "Flux 3 Video", "Grok",
+    "HappyHorse", "HiDream", "HiDream-O1", "Hunyuan 1", "Hunyuan Video",
+    "Ideogram 4.0", "Ideogram 4.5", "Boogu", "Illustrious", "Imagen4", "Kolors",
+    "Krea 2", "Krea 2 Turbo", "Krea 3", "LTXV", "LTXV2", "LTXV 2.3", "LTXV 2.5",
+    "Lens", "Lumina", "MageFlow", "MAI", "Mochi", "Nano Banana", "NoobAI", "ODOR",
+    "OpenAI", "Upscaler", "Other", "PixArt a", "PixArt E", "Playground v2", "Pony",
+    "Pony V7", "Qwen", "Qwen 2", "Qwen 2.1", "Qwen 3", "Stable Cascade", "SD 1.4",
+    "SD 1.5", "SD 1.5 LCM", "SD 1.5 Hyper", "SD 2.0", "SD 2.0 768", "SD 2.1",
+    "SD 2.1 768", "SD 2.1 Unclip", "SD 3", "SD 3.5", "SD 3.5 Large",
+    "SD 3.5 Large Turbo", "SD 3.5 Medium", "SDXL 0.9", "SDXL 1.0", "SDXL 1.0 LCM",
+    "SDXL Lightning", "SDXL Hyper", "SDXL Turbo", "SDXL Distilled", "Reve",
+    "Muse Image", "Seedream", "SVD", "SVD XT", "Sora 2", "Veo 3", "Wan Video",
+    "Wan Video 1.3B t2v", "Wan Video 14B t2v", "Wan Video 14B i2v 480p",
+    "Wan Video 14B i2v 720p", "Wan Video 2.2 TI2V-5B", "Wan Video 2.2 I2V-A14B",
+    "Wan Video 2.2 T2V-A14B", "Wan Video 2.5 T2V", "Wan Video 2.5 I2V",
+    "Wan Image 2.7", "Wan Video 2.7", "Wan Video 3.0", "ZImageTurbo", "ZImageBase",
+    "Ming Image Design 0.1", "Ming Image Design Layer 0.1", "Vidu Q1", "MiniMax H3",
+    "Kling", "Seedance", "ACE Audio", "MiniMax Music 3", "YuE2", "Sonilo",
+    "PolyGen", "Tripo", "Hunyuan3D", "Pixal3D", "Trellis.2",
+]
+
+# Maps legacy/friendly tokens (lowercased) onto the exact baseModels strings the
+# API accepts today. This also migrates older saved settings that stored the now
+# invalid strings (e.g. "FLUX.1 [dev]") which otherwise cause an HTTP 400.
 PLATFORM_ALIAS_MAP = {
-    "flux": "FLUX.1 [dev]",
-    "flux dev": "FLUX.1 [dev]",
-    "flux.1d": "FLUX.1 [dev]",
-    "flux 1d": "FLUX.1 [dev]",
-    "flux .1d": "FLUX.1 [dev]",
-    "flux1d": "FLUX.1 [dev]",
-    "flux 1d (dev)": "FLUX.1 [dev]",
-    "flux.1 [dev]": "FLUX.1 [dev]",
-    "flux 1s": "FLUX.1 [schnell]",
-    "flux .1s": "FLUX.1 [schnell]",
-    "flux.1s": "FLUX.1 [schnell]",
-    "flux schnell": "FLUX.1 [schnell]",
-    "flux.1 [schnell]": "FLUX.1 [schnell]",
-    "flux 1 pro": "FLUX.1 [pro]",
-    "flux pro": "FLUX.1 [pro]",
-    "flux.1p": "FLUX.1 [pro]",
-    "flux.1 [pro]": "FLUX.1 [pro]",
-    "flux dev legacy": "Flux Dev",
-    "flux schnell legacy": "Flux Schnell",
+    "flux": "Flux.1 D",
+    "flux dev": "Flux.1 D",
+    "flux.1d": "Flux.1 D",
+    "flux 1d": "Flux.1 D",
+    "flux1d": "Flux.1 D",
+    "flux 1d (dev)": "Flux.1 D",
+    "flux.1 [dev]": "Flux.1 D",
+    "flux.1 d": "Flux.1 D",
+    "flux 1s": "Flux.1 S",
+    "flux.1s": "Flux.1 S",
+    "flux schnell": "Flux.1 S",
+    "flux.1 [schnell]": "Flux.1 S",
+    "flux.1 s": "Flux.1 S",
+    "flux 1 pro": "Flux.1 D",
+    "flux pro": "Flux.1 D",
+    "flux.1 [pro]": "Flux.1 D",
+    "flux krea": "Flux.1 Krea",
+    "flux.1 krea": "Flux.1 Krea",
+    "flux kontext": "Flux.1 Kontext",
+    "flux.1 kontext": "Flux.1 Kontext",
+    "flux 2": "Flux.2 D",
+    "flux2": "Flux.2 D",
+    "flux.2 d": "Flux.2 D",
     "pony diffusion": "Pony",
     "pony": "Pony",
-    "pony diffusion xl": "Pony Diffusion XL",
+    "pony diffusion xl": "Pony",
+    "pony v7": "Pony V7",
     "illustrious": "Illustrious",
-    "illustrious xl": "Illustrious XL",
+    "illustrious xl": "Illustrious",
+    "noobai": "NoobAI",
+    "chroma": "Chroma",
+    "anima": "Anima",
     "sdxl": "SDXL 1.0",
     "sdxl 1": "SDXL 1.0",
     "sdxl 1.0": "SDXL 1.0",
     "sdxl turbo": "SDXL Turbo",
     "sdxl lightning": "SDXL Lightning",
-    "sdxl refiner": "SDXL Refiner",
+    "sdxl refiner": "SDXL 1.0",
     "sd 1.5": "SD 1.5",
     "stable diffusion 1.5": "SD 1.5",
-    "qwen": "Qwen 2D",
-    "qwen 2d": "Qwen 2D",
-    "qwen 2.5d": "Qwen 2.5D",
-    "wan": "Wan 2.2",
-    "wan 2.2": "Wan 2.2",
-    "wan2.2": "Wan 2.2",
-    "wan 1.3": "Wan 1.3",
-    "flux 2": "Flux 2",
-    "flux2": "Flux 2",
-    "z-image-turbo": "Z-Image-Turbo",
-    "z image turbo": "Z-Image-Turbo",
-    "zimageturbo": "Z-Image-Turbo",
+    "sd 3.5": "SD 3.5",
+    "qwen": "Qwen",
+    "qwen 2d": "Qwen",
+    "qwen 2": "Qwen 2",
+    "qwen 2.1": "Qwen 2.1",
+    "qwen 2.5d": "Qwen 2",
+    "qwen 3": "Qwen 3",
+    "moss": "MOSS Image",
+    "moss image": "MOSS Image",
+    "krea 2": "Krea 2",
+    "krea2": "Krea 2",
+    "krea 2 turbo": "Krea 2 Turbo",
+    "krea2 turbo": "Krea 2 Turbo",
+    "hidream": "HiDream",
+    "wan": "Wan Video 2.2 T2V-A14B",
+    "wan 2.2": "Wan Video 2.2 T2V-A14B",
+    "wan2.2": "Wan Video 2.2 T2V-A14B",
+    "wan video 2.2 t2v": "Wan Video 2.2 T2V-A14B",
+    "wan 1.3": "Wan Video 1.3B t2v",
+    "z-image-turbo": "ZImageTurbo",
+    "z image turbo": "ZImageTurbo",
+    "z-image turbo": "ZImageTurbo",
+    "zimageturbo": "ZImageTurbo",
 }
+
+# Civitai's 5-tier content rating system (replaces the legacy 4-value nsfw
+# string). ``browsingLevel`` is a bitmask; a "max rating" selection sends the
+# cumulative mask of every tier up to and including the chosen one.
+RATING_LEVELS: List[Tuple[str, int]] = [
+    ("PG", 1),
+    ("PG-13", 2),
+    ("R", 4),
+    ("X", 8),
+    ("XXX", 16),
+]
+RATING_ORDER: List[str] = [name for name, _ in RATING_LEVELS]
+RATING_BIT: Dict[str, int] = {name: bit for name, bit in RATING_LEVELS}
+
+# Migrate the old nsfw string values onto the new rating tiers.
+LEGACY_NSFW_TO_RATING = {
+    "None": "PG",
+    "Soft": "PG-13",
+    "Mature": "R",
+    "X": "X",
+    "false": "PG",
+    "true": "XXX",
+}
+
+
+def rating_to_browsing_level(max_tier: str) -> int:
+    """Cumulative browsingLevel bitmask for every tier up to *max_tier*."""
+    mask = 0
+    for name, bit in RATING_LEVELS:
+        mask |= bit
+        if name == max_tier:
+            return mask
+    return mask
+
+
+def normalize_rating(value: str) -> str:
+    """Coerce a stored/legacy rating value onto a valid 5-tier label."""
+    if value in RATING_BIT:
+        return value
+    return LEGACY_NSFW_TO_RATING.get(value, "PG")
 
 
 def _normalize_base_model_token(value: str) -> Optional[str]:
@@ -123,38 +216,12 @@ class CivitaiApp:
         # File-variant selection chosen for the next download run (None = all)
         self._pending_file_ids: Optional[List[int]] = None
 
-        self._style = ttk.Style(self.root)
-        # Try to use a modern theme if available
-        available_themes = self._style.theme_names()
-        for preferred in ("vista", "winnative", "clam", "alt"):
-            if preferred in available_themes:
-                self._style.theme_use(preferred)
-                break
+        # Apply the centralized light theme (clam-based, fully colourable).
+        self._style = theme.apply_theme(self.root)
+        self._set_window_icon()
 
-        # Configure custom styles with better visual appearance
-        self._style.configure("TFrame", background="#f5f5f5")
-        self._style.configure("TLabelframe", background="#f5f5f5")
-        self._style.configure("TLabelframe.Label", background="#f5f5f5", font=("Segoe UI", 9, "bold"))
-        self._style.configure("TLabel", background="#f5f5f5", font=("Segoe UI", 9))
-        self._style.configure("TButton", padding=(10, 5), font=("Segoe UI", 9))
-        self._style.configure("TCheckbutton", background="#f5f5f5", font=("Segoe UI", 9))
-        self._style.configure("TEntry", padding=(5, 3))
-        self._style.configure("TCombobox", padding=(5, 3))
-        
-        # Download button styles
-        self._style.configure("Download.TButton", padding=(12, 6), font=("Segoe UI", 10, "bold"))
-        self._style.configure("Downloading.TButton", padding=(12, 6), font=("Segoe UI", 10, "bold"), foreground="white", background="#d9534f")
-        self._style.map("Downloading.TButton", background=[("disabled", "#d9534f")])
-        
-        # Accent button style for important actions
-        self._style.configure("Accent.TButton", padding=(10, 5), font=("Segoe UI", 9, "bold"))
-        
-        # Treeview styling
-        self._style.configure("Treeview", font=("Segoe UI", 9), rowheight=24)
-        self._style.configure("Treeview.Heading", font=("Segoe UI", 9, "bold"))
-        
-        # Recent directory button style
-        self._style.configure("Recent.TButton", padding=(6, 2), font=("Segoe UI", 8))
+        # Cache for colour-coded folder-category chip styles (keyed by colour).
+        self._chip_style_cache: Dict[tuple, str] = {}
 
         self._message_queue: Queue[tuple[str, str]] = Queue()
         self._selected_tags: Dict[str, str] = {}  # tag_name -> display_name
@@ -164,8 +231,9 @@ class CivitaiApp:
         
         # Recent directories feature
         self._recent_dirs: List[str] = []
+        self._pinned_dirs: List[str] = []
         self._recent_dirs_frame: Optional[ttk.Frame] = None
-        self._max_recent_dirs = 10
+        self._max_recent_dirs = 14
         
         # Download queue for queuing multiple downloads
         self._download_queue: List[Dict[str, str]] = []  # List of {url, output_dir}
@@ -179,8 +247,79 @@ class CivitaiApp:
         self._build_layout()
         self._load_settings()
 
+        # Colour the status text automatically whenever it changes.
+        self.status_var.trace_add("write", self._on_status_changed)
+
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.after(200, self._drain_messages)
+        self._refresh_base_model_choices()
+
+    def _set_window_icon(self) -> None:
+        """Use one of the bundled PNG icons as the window icon (best-effort)."""
+        try:
+            icon_dir = Path(__file__).resolve().parent.parent / "chrome_extension"
+            for name in ("icon48.png", "icon128.png", "icon16.png"):
+                candidate = icon_dir / name
+                if candidate.exists():
+                    self._app_icon = tk.PhotoImage(file=str(candidate))
+                    self.root.iconphoto(True, self._app_icon)
+                    break
+        except Exception:
+            pass
+
+    def _on_status_changed(self, *_args) -> None:
+        """Recolour the status value label based on its text content."""
+        label = getattr(self, "_status_value_label", None)
+        if label is None:
+            return
+        text = self.status_var.get().lower()
+        pal = theme.PALETTE
+        if any(k in text for k in ("fail", "error", "cancel", "invalid")):
+            color = pal["danger"]
+        elif any(k in text for k in ("download", "resolv", "search", "working", "fetch")):
+            color = pal["accent"]
+        elif any(k in text for k in ("done", "complete", "finished", "success", "saved")):
+            color = pal["success"]
+        else:
+            color = pal["text_muted"]
+        label.configure(foreground=color)
+
+    def _chip_style(self, base_style: str, text_color: Optional[str]) -> str:
+        """Return a ttk style (derived from *base_style*) with a neutral fill and
+        border, and *text_color* used only for the label (folder category).
+        """
+        if not text_color:
+            return base_style
+        key = (base_style, text_color)
+        name = self._chip_style_cache.get(key)
+        if name:
+            return name
+        pal = theme.PALETTE
+        name = f"c{len(self._chip_style_cache)}.{base_style}"
+        self._style.configure(name, foreground=text_color)
+        self._style.map(
+            name,
+            foreground=[("active", text_color), ("disabled", pal["text_muted"])],
+        )
+        self._chip_style_cache[key] = name
+        return name
+
+    def _set_progress_active(self, active: bool) -> None:
+        """Show and animate the indeterminate progress bar while downloading."""
+        bar = getattr(self, "_progress", None)
+        if bar is None:
+            return
+        try:
+            if active:
+                if not bar.winfo_ismapped():
+                    bar.pack(side=tk.RIGHT, padx=(0, 4))
+                bar.start(12)
+            else:
+                bar.stop()
+                if bar.winfo_ismapped():
+                    bar.pack_forget()
+        except Exception:
+            pass
 
     def _build_variables(self) -> None:
         self.api_key_var = tk.StringVar()
@@ -196,7 +335,7 @@ class CivitaiApp:
         self.base_models_var = tk.StringVar()
         self.tag_query_var = tk.StringVar()
 
-        self.nsfw_var = tk.StringVar(value="None")
+        self.nsfw_var = tk.StringVar(value="XXX")
         self.period_var = tk.StringVar(value="AllTime")
         self.sort_var = tk.StringVar(value=SORT_OPTIONS[0])
 
@@ -207,7 +346,7 @@ class CivitaiApp:
         self.include_workflows_var = tk.BooleanVar(value=False)
         self.save_metadata_var = tk.BooleanVar(value=True)
         self.native_images_var = tk.BooleanVar(value=True)
-        self.save_prompts_var = tk.BooleanVar(value=False)
+        self.save_prompts_var = tk.BooleanVar(value=True)
 
         self.output_dir_var = tk.StringVar(value="downloads")
         self.model_base_path_var = tk.StringVar(value="")
@@ -220,15 +359,20 @@ class CivitaiApp:
 
         self.platform_vars = {value: tk.BooleanVar(value=False) for _, value in PLATFORM_CHOICES}
         self._tag_lookup: Dict[str, int] = {}
+        # Canonical baseModels strings the API accepts. Seeded from the bundled
+        # fallback, then replaced with the live /api/v1/enums list at startup.
+        self._valid_base_models: List[str] = list(BASE_MODELS_FALLBACK)
+        self._valid_base_models_set = set(BASE_MODELS_FALLBACK)
+        self.add_platform_var = tk.StringVar()
 
     def _build_layout(self) -> None:
         # Header with title
         header_frame = ttk.Frame(self.root)
         header_frame.pack(fill=tk.X, padx=15, pady=(10, 5))
-        title_label = ttk.Label(header_frame, text="Civitai Desktop Helper", font=("Segoe UI", 14, "bold"))
+        title_label = ttk.Label(header_frame, text="Civitai Desktop Helper", style="Title.TLabel")
         title_label.pack(side=tk.LEFT)
-        version_label = ttk.Label(header_frame, text="v1.2", font=("Segoe UI", 9))
-        version_label.pack(side=tk.LEFT, padx=(8, 0), pady=(4, 0))
+        version_label = ttk.Label(header_frame, text="v1.2", style="Version.TLabel")
+        version_label.pack(side=tk.LEFT, padx=(8, 0), pady=(6, 0))
 
         # Separator
         ttk.Separator(self.root, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=15, pady=5)
@@ -244,7 +388,7 @@ class CivitaiApp:
         # Recent directories section
         recent_container = ttk.Frame(self.root)
         recent_container.pack(fill=tk.X, padx=15, pady=(0, 4))
-        ttk.Label(recent_container, text="Recent:", font=("Segoe UI", 8)).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Label(recent_container, text="Recent:", style="Muted.TLabel").pack(side=tk.LEFT, padx=(0, 8))
         self._recent_dirs_frame = ttk.Frame(recent_container)
         self._recent_dirs_frame.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
@@ -269,9 +413,9 @@ class CivitaiApp:
             log_frame, 
             height=5, 
             state=tk.DISABLED,
-            font=("Consolas", 9),
-            bg="#1e1e1e",
-            fg="#d4d4d4",
+            font=theme.FONTS["mono"],
+            bg=theme.PALETTE["log_bg"],
+            fg=theme.PALETTE["log_fg"],
             insertbackground="white",
             selectbackground="#264f78",
             relief=tk.FLAT,
@@ -279,11 +423,23 @@ class CivitaiApp:
             pady=8
         )
         self.log_box.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        # Colour tags for log lines (classified in _drain_messages).
+        self.log_box.tag_configure("error", foreground="#f08c8c")
+        self.log_box.tag_configure("success", foreground="#8ce09a")
+        self.log_box.tag_configure("warning", foreground="#f0c674")
+        self.log_box.tag_configure("info", foreground=theme.PALETTE["log_fg"])
 
         status_frame = ttk.Frame(self.root)
         status_frame.pack(fill=tk.X, padx=15, pady=(0, 12))
-        ttk.Label(status_frame, text="Status:", font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT)
-        ttk.Label(status_frame, textvariable=self.status_var, font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Label(status_frame, text="Status:", style="TLabel", font=theme.FONTS["bold"]).pack(side=tk.LEFT)
+        self._status_value_label = ttk.Label(status_frame, textvariable=self.status_var, font=theme.FONTS["base"])
+        self._status_value_label.pack(side=tk.LEFT, padx=(6, 0))
+        self._progress = ttk.Progressbar(
+            status_frame, mode="indeterminate", length=180,
+            style="Accent.Horizontal.TProgressbar",
+        )
+        # Packed/started only while a download is active (see _set_progress_active).
+        self._on_status_changed()
 
     def _build_search_tab(self) -> None:
         ttk.Label(
@@ -310,6 +466,16 @@ class CivitaiApp:
         self._search_button.grid(row=0, column=4, padx=5)
         ttk.Button(search_frame, text="Clear", command=self._clear_search).grid(row=0, column=5, padx=5)
         search_frame.columnconfigure(3, weight=1)
+        ttk.Label(
+            search_frame,
+            text="💡 Images have no free-text search — for the Images category the query is matched as tag name(s); "
+                 "separate multiple tags with commas. Platform checkboxes and Max rating also apply. "
+                 "Leave the query empty to browse a Username's images; the Model ID / Version fields never limit a search.",
+            font=("Segoe UI", 8),
+            foreground="#666666",
+            wraplength=720,
+            justify=tk.LEFT,
+        ).grid(row=3, column=0, columnspan=6, sticky="w", pady=(0, 2))
 
         _TREE_COLS = ("col1", "col2", "col3", "col4", "col5")
         _COL_WIDTHS = (60, 260, 90, 130, 90)
@@ -318,6 +484,7 @@ class CivitaiApp:
             self.results_tree.heading(col, text="")
             self.results_tree.column(col, width=w, minwidth=40)
         self.results_tree.grid(row=1, column=0, columnspan=6, sticky="nsew", pady=8)
+        theme.configure_treeview_tags(self.results_tree)
         self.results_tree.bind("<Double-1>", lambda _e: self._apply_selection())
         search_frame.rowconfigure(1, weight=1)
 
@@ -372,13 +539,28 @@ class CivitaiApp:
                 text=label,
                 variable=self.platform_vars[value],
                 command=self._sync_platforms,
-            ).grid(row=row, column=col, padx=2, pady=1, sticky="w")
+            ).grid(row=row, column=col, padx=(4, 8), pady=2, sticky="w")
 
         footer_row = (len(PLATFORM_CHOICES) + columns - 1) // columns
-        ttk.Label(platform_frame, text="Custom:").grid(row=footer_row, column=0, sticky="w", padx=2)
-        ttk.Entry(platform_frame, textvariable=self.base_models_var).grid(row=footer_row, column=1, columnspan=columns - 1, sticky="we", padx=2)
+        ttk.Label(platform_frame, text="Custom:").grid(row=footer_row, column=0, sticky="w", padx=(4, 8), pady=(4, 2))
+        ttk.Entry(platform_frame, textvariable=self.base_models_var).grid(row=footer_row, column=1, columnspan=columns - 1, sticky="we", padx=2, pady=(4, 2))
+
+        picker_row = footer_row + 1
+        ttk.Label(platform_frame, text="All models:").grid(row=picker_row, column=0, sticky="w", padx=(4, 8), pady=(0, 4))
+        self._platform_picker = ttk.Combobox(
+            platform_frame,
+            textvariable=self.add_platform_var,
+            values=self._valid_base_models,
+            state="readonly",
+            width=28,
+        )
+        self._platform_picker.grid(row=picker_row, column=1, columnspan=2, sticky="we", padx=2, pady=(0, 4))
+        self._platform_picker.bind("<<ComboboxSelected>>", lambda _e: self._add_picked_platform())
+        ttk.Button(platform_frame, text="Add", command=self._add_picked_platform).grid(
+            row=picker_row, column=3, sticky="w", padx=2, pady=(0, 4)
+        )
         for col in range(columns):
-            platform_frame.columnconfigure(col, weight=1 if col == 1 else 0)
+            platform_frame.columnconfigure(col, weight=1)
 
         model_frame = ttk.LabelFrame(parent, text="Model and user filters")
         model_frame.pack(fill=tk.X, padx=5, pady=3)
@@ -393,8 +575,8 @@ class CivitaiApp:
 
         options_frame = ttk.LabelFrame(parent, text="Result options")
         options_frame.pack(fill=tk.X, padx=5, pady=3)
-        ttk.Label(options_frame, text="NSFW:").grid(row=0, column=0, sticky="w", padx=2)
-        ttk.Combobox(options_frame, textvariable=self.nsfw_var, values=["None", "Soft", "Mature", "X"], state="readonly", width=8).grid(row=0, column=1, padx=2)
+        ttk.Label(options_frame, text="Max rating:").grid(row=0, column=0, sticky="w", padx=2)
+        ttk.Combobox(options_frame, textvariable=self.nsfw_var, values=RATING_ORDER, state="readonly", width=8).grid(row=0, column=1, padx=2)
         ttk.Label(options_frame, text="Period:").grid(row=0, column=2, sticky="w", padx=2)
         ttk.Combobox(options_frame, textvariable=self.period_var, values=["AllTime", "Year", "Month", "Week", "Day"], state="readonly", width=8).grid(row=0, column=3, padx=2)
         ttk.Label(options_frame, text="Sort:").grid(row=0, column=4, sticky="w", padx=2)
@@ -413,6 +595,14 @@ class CivitaiApp:
         ttk.Checkbutton(dl_frame, text="Metadata",    variable=self.save_metadata_var).grid(     row=0, column=4, sticky="w", padx=3, pady=2)
         ttk.Checkbutton(dl_frame, text="Native size", variable=self.native_images_var).grid(     row=0, column=5, sticky="w", padx=3, pady=2)
         ttk.Checkbutton(dl_frame, text="Prompts",     variable=self.save_prompts_var).grid(      row=0, column=6, sticky="w", padx=3, pady=2)
+        ttk.Label(
+            dl_frame,
+            text="💡 Prompts come from each image's embedded metadata. Enable Prompts with Previews off to collect prompts.txt without keeping the images.",
+            font=("Segoe UI", 8),
+            foreground="#666666",
+            wraplength=720,
+            justify=tk.LEFT,
+        ).grid(row=1, column=0, columnspan=8, sticky="w", padx=3, pady=(0, 2))
 
         tag_frame = ttk.LabelFrame(parent, text="Tags")
         tag_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=3)
@@ -437,6 +627,7 @@ class CivitaiApp:
         self.tag_results_tree.column("models", width=40)
         tag_vsb = ttk.Scrollbar(tag_lists_frame, orient=tk.VERTICAL, command=self.tag_results_tree.yview)
         self.tag_results_tree.configure(yscrollcommand=tag_vsb.set)
+        theme.configure_treeview_tags(self.tag_results_tree)
         self.tag_results_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         tag_vsb.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 6))
 
@@ -446,6 +637,7 @@ class CivitaiApp:
         self.active_tags_tree.column("tag", width=200)
         active_vsb = ttk.Scrollbar(tag_lists_frame, orient=tk.VERTICAL, command=self.active_tags_tree.yview)
         self.active_tags_tree.configure(yscrollcommand=active_vsb.set)
+        theme.configure_treeview_tags(self.active_tags_tree)
         self.active_tags_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         active_vsb.pack(side=tk.LEFT, fill=tk.Y)
 
@@ -464,7 +656,7 @@ class CivitaiApp:
         
         ttk.Label(
             api_frame, 
-            text="Your API key is used to access the Civitai API. Get one from civitai.com/user/account",
+            text="Your API key is used to access the Civitai API. Get one from civitai.red/user/account",
             font=("Segoe UI", 8),
             foreground="#666666"
         ).grid(row=0, column=0, columnspan=3, sticky="w", padx=10, pady=(10, 5))
@@ -692,45 +884,52 @@ Settings are automatically saved when you close the app."""
         self._message_queue.put(("action", ("url_received", {"url": url})))
     
     def _show_quick_download_popup(self, url: str) -> None:
-        """Show a popup for quick download with location selection."""
+        """Quick-download popup: stable last-used folder buttons plus a multi-root
+        folder tree that reveals and highlights recently-used folders wherever they
+        live (not just under the model base path)."""
         popup = tk.Toplevel(self.root)
         popup.title("Quick Download")
-        popup.geometry("550x520")
-        popup.resizable(False, False)
+        popup.geometry("600x720")
+        popup.minsize(520, 560)
         popup.transient(self.root)
         popup.grab_set()
-        
-        # Center on screen
+
         popup.update_idletasks()
-        x = (popup.winfo_screenwidth() - 550) // 2
-        y = (popup.winfo_screenheight() - 520) // 2
-        popup.geometry(f"550x520+{x}+{y}")
-        
-        # Make it topmost
+        x = (popup.winfo_screenwidth() - 600) // 2
+        y = (popup.winfo_screenheight() - 720) // 2
+        popup.geometry(f"600x720+{x}+{y}")
         popup.attributes('-topmost', True)
         popup.focus_force()
-        
+
         # URL display
         url_frame = ttk.LabelFrame(popup, text="URL from Civitai")
-        url_frame.pack(fill=tk.X, padx=15, pady=(15, 8))
-        
-        # Truncate URL for display
-        display_url = url if len(url) < 65 else url[:62] + "..."
+        url_frame.pack(fill=tk.X, padx=15, pady=(15, 6))
+        display_url = url if len(url) < 70 else url[:67] + "..."
         ttk.Label(url_frame, text=display_url, font=("Segoe UI", 9), foreground="#0066cc").pack(padx=10, pady=6)
-        
-        # Location selection
-        location_frame = ttk.LabelFrame(popup, text="Download Location")
-        location_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=8)
-        
+
         selected_dir = tk.StringVar(value=self.output_dir_var.get())
-        
-        # Current location
-        current_frame = ttk.Frame(location_frame)
-        current_frame.pack(fill=tk.X, padx=10, pady=(8, 5))
+
+        def _norm(p: str) -> str:
+            try:
+                return str(Path(p).resolve()).lower()
+            except Exception:
+                return (p or "").strip().lower()
+
+        def _anchor(p: str) -> str:
+            try:
+                return Path(p).anchor or str(Path(p))
+            except Exception:
+                return p
+
+        recent_norm = {_norm(d) for d in self._recent_dirs}
+
+        # Save-to entry + Browse
+        current_frame = ttk.Frame(popup)
+        current_frame.pack(fill=tk.X, padx=15, pady=(4, 2))
         ttk.Label(current_frame, text="Save to:").pack(side=tk.LEFT)
-        location_entry = ttk.Entry(current_frame, textvariable=selected_dir, width=45)
+        location_entry = ttk.Entry(current_frame, textvariable=selected_dir)
         location_entry.pack(side=tk.LEFT, padx=8, fill=tk.X, expand=True)
-        
+
         def browse_location():
             base = self.model_base_path_var.get().strip()
             initial = selected_dir.get() or base or None
@@ -740,64 +939,187 @@ Settings are automatically saved when you close the app."""
                 chosen = filedialog.askdirectory(parent=popup)
             if chosen:
                 selected_dir.set(chosen)
-        
+                reveal(chosen, select=True)
+
         ttk.Button(current_frame, text="Browse", command=browse_location).pack(side=tk.LEFT)
-        
-        # Recent directories as buttons in a 2-column grid
-        if self._recent_dirs:
-            ttk.Label(location_frame, text="Recent locations (click to select):", font=("Segoe UI", 8)).pack(anchor="w", padx=10, pady=(8, 4))
-            
-            recent_frame = ttk.Frame(location_frame)
-            recent_frame.pack(fill=tk.X, padx=10, pady=(0, 8))
-            
-            # Configure 2 columns
-            recent_frame.columnconfigure(0, weight=1)
-            recent_frame.columnconfigure(1, weight=1)
-            
-            for idx, dir_path in enumerate(self._recent_dirs[:10]):  # Show up to 10 recent dirs
-                short_name = self._get_short_dir_name(dir_path)
-                # Truncate if too long
-                if len(short_name) > 28:
-                    short_name = "..." + short_name[-25:]
-                
-                row = idx // 2
-                col = idx % 2
-                
-                btn = ttk.Button(
-                    recent_frame,
-                    text=f"📁 {short_name}",
-                    command=lambda d=dir_path: selected_dir.set(d)
+
+        # Last-used folders — stable buttons (sorted so they never jump around)
+        recent_frame = ttk.LabelFrame(popup, text="Last used folders (click to select)")
+        recent_frame.pack(fill=tk.X, padx=15, pady=(8, 4))
+        recent_inner = ttk.Frame(recent_frame)
+        recent_inner.pack(fill=tk.X, padx=6, pady=4)
+        recent_sorted = sorted(
+            (d for d in self._recent_dirs if d),
+            key=lambda d: self._get_short_dir_name(d).lower(),
+        )
+        if not recent_sorted:
+            ttk.Label(recent_inner, text="(none yet — downloaded-to folders will appear here)",
+                      style="Muted.TLabel").grid(row=0, column=0, sticky="w")
+        else:
+            for idx, d in enumerate(recent_sorted[:12]):
+                name = self._get_short_dir_name(d)
+                if len(name) > 26:
+                    name = "…" + name[-24:]
+                b = ttk.Button(recent_inner, text=f"📁 {name}",
+                               command=lambda dd=d: (selected_dir.set(dd), reveal(dd, select=True)))
+                b.grid(row=idx // 3, column=idx % 3, sticky="ew", padx=2, pady=2)
+                self._add_tooltip(b, d)
+            for c in range(3):
+                recent_inner.columnconfigure(c, weight=1)
+
+        # Folder tree (multi-root: one node per drive/anchor involved)
+        tree_frame = ttk.LabelFrame(popup, text="Folders (recent folders highlighted)")
+        tree_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=(4, 4))
+
+        filter_row = ttk.Frame(tree_frame)
+        filter_row.pack(fill=tk.X, padx=6, pady=(6, 2))
+        ttk.Label(filter_row, text="Filter:").pack(side=tk.LEFT)
+        filter_var = tk.StringVar()
+        filter_entry = ttk.Entry(filter_row, textvariable=filter_var)
+        filter_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(6, 6))
+
+        tree_container = ttk.Frame(tree_frame)
+        tree_container.pack(fill=tk.BOTH, expand=True, padx=6, pady=(0, 6))
+        tree = ttk.Treeview(tree_container, show="tree", selectmode="browse", height=12)
+        vsb = ttk.Scrollbar(tree_container, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=vsb.set)
+        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        tree.tag_configure("recent", background="#fff3bf")
+
+        item_paths: Dict[str, str] = {}
+
+        def _subdirs(path: str) -> List[str]:
+            try:
+                return sorted(
+                    (str(c) for c in Path(path).iterdir() if c.is_dir() and not c.name.startswith('.')),
+                    key=str.lower,
                 )
-                btn.grid(row=row, column=col, sticky="ew", padx=2, pady=2)
-                # Tooltip with full path
-                self._add_tooltip(btn, dir_path)
-        
-        # Buttons at bottom - fixed position
+            except Exception:
+                return []
+
+        def _has_subdir(path: str) -> bool:
+            try:
+                return any(c.is_dir() and not c.name.startswith('.') for c in Path(path).iterdir())
+            except Exception:
+                return False
+
+        def add_node(parent_item: str, path: str, text: Optional[str] = None) -> str:
+            label = text if text is not None else (Path(path).name or path)
+            tags = ("recent",) if _norm(path) in recent_norm else ()
+            item = tree.insert(parent_item, "end", text=f"📁 {label}", open=False, tags=tags)
+            item_paths[item] = path
+            if _has_subdir(path):
+                tree.insert(item, "end", text="…")  # lazy placeholder
+            return item
+
+        def populate(item: str) -> None:
+            children = tree.get_children(item)
+            if len(children) == 1 and children[0] not in item_paths:
+                tree.delete(children[0])
+                for sub in _subdirs(item_paths[item]):
+                    add_node(item, sub)
+
+        def on_open(_event=None):
+            populate(tree.focus())
+
+        def on_select(_event=None):
+            sel = tree.selection()
+            if sel and sel[0] in item_paths:
+                selected_dir.set(item_paths[sel[0]])
+
+        tree.bind("<<TreeviewOpen>>", on_open)
+        tree.bind("<<TreeviewSelect>>", on_select)
+
+        # Build one root per distinct drive/anchor across the base path, recent
+        # folders, and the current target — so folders on any drive are reachable.
+        base_path = self.model_base_path_var.get().strip()
+        seeds: List[str] = []
+        for s in [base_path, self.output_dir_var.get().strip(), *self._recent_dirs, selected_dir.get()]:
+            if s and Path(s).exists() and s not in seeds:
+                seeds.append(s)
+        if not seeds:
+            seeds.append(str(Path.home()))
+
+        anchor_items: Dict[str, str] = {}
+        for s in seeds:
+            anc = _anchor(s)
+            key = _norm(anc)
+            if key not in anchor_items and Path(anc).exists():
+                root_item = add_node("", anc, text=anc)
+                anchor_items[key] = root_item
+                tree.item(root_item, open=True)
+                populate(root_item)
+
+        def reveal(path: str, select: bool = False) -> Optional[str]:
+            try:
+                p = Path(path)
+            except Exception:
+                return None
+            root = anchor_items.get(_norm(_anchor(path)))
+            if not root or not p.exists():
+                return None
+            populate(root)
+            current = root
+            for part in p.parts[1:]:
+                match = None
+                for child in tree.get_children(current):
+                    cp = item_paths.get(child)
+                    if cp and Path(cp).name.lower() == part.lower():
+                        match = child
+                        break
+                if match is None:
+                    break
+                populate(match)
+                tree.item(match, open=True)
+                current = match
+            if select:
+                tree.selection_set(current)
+            tree.see(current)
+            return current
+
+        # Reveal the base path and each recent folder (highlighted), then select
+        # the current target.
+        if base_path and Path(base_path).exists():
+            reveal(base_path)
+        for d in self._recent_dirs:
+            reveal(d)
+        if selected_dir.get():
+            reveal(selected_dir.get(), select=True)
+
+        def jump_to_filter(_event=None):
+            query = filter_var.get().strip().lower()
+            if not query:
+                return "break"
+            for item, path in item_paths.items():
+                if query in Path(path).name.lower():
+                    tree.see(item)
+                    tree.selection_set(item)
+                    tree.focus(item)
+                    break
+            return "break"
+
+        filter_var.trace_add("write", lambda *_a: jump_to_filter())
+        filter_entry.bind("<Return>", jump_to_filter)
+
+        # Bottom buttons (fixed position)
         btn_frame = ttk.Frame(popup)
-        btn_frame.pack(fill=tk.X, padx=15, pady=(8, 15), side=tk.BOTTOM)
-        
+        btn_frame.pack(fill=tk.X, padx=15, pady=(4, 15), side=tk.BOTTOM)
+
         def do_download():
-            # Update output directory
             self.output_dir_var.set(selected_dir.get())
             self._add_recent_dir(selected_dir.get())
-            # Close popup
             popup.destroy()
-            # Start download (will queue if busy)
             self._start_download()
-        
+
         def cancel():
             popup.destroy()
-        
+
         ttk.Button(btn_frame, text="Cancel", command=cancel).pack(side=tk.LEFT, padx=5)
         download_btn = ttk.Button(btn_frame, text="⬇ Download Now", style="Download.TButton", command=do_download)
         download_btn.pack(side=tk.RIGHT, padx=5)
-        
-        # Bind Enter key to download
-        popup.bind('<Return>', lambda e: do_download())
-        # Bind Escape to cancel
+
         popup.bind('<Escape>', lambda e: cancel())
-        
-        # Focus the download button
         download_btn.focus_set()
 
     def _apply_api_key(self) -> None:
@@ -860,7 +1182,6 @@ Settings are automatically saved when you close the app."""
                 self._recent_dirs_frame,
                 text=f"📁 {display_name}",
                 command=lambda d=dir_path: self._select_recent_dir(d),
-                style="Recent.TButton"
             )
             btn.pack(side=tk.LEFT, padx=(0, 4))
             # Add tooltip-like behavior
@@ -977,6 +1298,15 @@ Settings are automatically saved when you close the app."""
             self.version_id_var.set("")
         if entity.extra.get("username"):
             self.username_var.set(entity.extra["username"])
+        # A pasted URL targets a specific model/user/image, so clear the discovery
+        # filters (platform checkboxes + tags) — otherwise leftover selections
+        # silently narrow the gallery (e.g. a stale "Krea 2" cutting 300 → 25).
+        for var in self.platform_vars.values():
+            var.set(False)
+        self.base_models_var.set("")
+        if self._selected_tags:
+            self._selected_tags.clear()
+            self._refresh_active_tags()
         self._queue_log(f"Resolved {entity.entity_type}: {entity.identifier}")
         return True
 
@@ -989,8 +1319,11 @@ Settings are automatically saved when you close the app."""
         model_id = self._safe_int(self.model_id_var.get())
         version_id = self._safe_int(self.version_id_var.get())
         nsfw_val = self.nsfw_var.get()
-        nsfw = nsfw_val if nsfw_val != "None" else ""
+        browsing_level = rating_to_browsing_level(normalize_rating(nsfw_val))
         media_types = self._selected_media_types()
+        # For image search the API has no free-text query, so treat the query box
+        # as a comma-separated list of tag names to match.
+        image_tags = [t.strip() for t in query.split(",") if t.strip()]
 
         self.status_var.set("Searching…")
         if hasattr(self, "_search_button"):
@@ -1015,11 +1348,22 @@ Settings are automatically saved when you close the app."""
                         for item in items
                     ]
                 elif category == "images":
-                    items, _ = self.client.search_images(
-                        limit=50, username=username, model_id=model_id,
-                        model_version_id=version_id, nsfw=nsfw,
-                        types=media_types, base_models=base_models,
-                    )
+                    # The Search tab shares the Model ID / Version / Username fields
+                    # with the download form, so never let those stale download
+                    # targets silently scope a search. A keyword search is global
+                    # (filtered only by platform + rating); with no keyword we fall
+                    # back to a username-scoped browse when one is provided.
+                    if image_tags:
+                        items, _ = self.client.search_images(
+                            limit=50, browsing_level=browsing_level,
+                            types=media_types, base_models=base_models,
+                            tag_names=image_tags,
+                        )
+                    else:
+                        items, _ = self.client.search_images(
+                            limit=50, username=username, browsing_level=browsing_level,
+                            types=media_types, base_models=base_models,
+                        )
                     display = [
                         (
                             item.get("id", ""),
@@ -1127,12 +1471,13 @@ Settings are automatically saved when you close the app."""
             return
         item = self._current_results[index]
         category = self.search_type_var.get()
+        site = self.client.base_url
         if category == "models":
-            url = f"https://civitai.com/models/{item.get('id')}"
+            url = f"{site}/models/{item.get('id')}"
         elif category == "images":
-            url = f"https://civitai.com/images/{item.get('id')}"
+            url = f"{site}/images/{item.get('id')}"
         elif category == "creators":
-            url = f"https://civitai.com/user/{item.get('username')}"
+            url = f"{site}/user/{item.get('username')}"
         else:
             # tags have a link field
             url = item.get("link", "")
@@ -1176,8 +1521,35 @@ Settings are automatically saved when you close the app."""
     def _refresh_active_tags(self) -> None:
         for row in self.active_tags_tree.get_children():
             self.active_tags_tree.delete(row)
-        for name in sorted(self._selected_tags):
-            self.active_tags_tree.insert("", tk.END, values=(name,), iid=name)
+        for idx, name in enumerate(sorted(self._selected_tags)):
+            self.active_tags_tree.insert("", tk.END, values=(name,), iid=name, tags=(theme.row_tag(idx),))
+
+    def _add_picked_platform(self) -> None:
+        """Append the base model chosen in the 'All models' picker to the filter."""
+        choice = self.add_platform_var.get().strip()
+        if not choice:
+            return
+        if choice in self.platform_vars:
+            self.platform_vars[choice].set(True)
+        else:
+            existing = [e.strip() for e in self.base_models_var.get().split(",") if e.strip()]
+            if choice not in existing:
+                existing.append(choice)
+                self.base_models_var.set(", ".join(existing))
+        self.add_platform_var.set("")
+        self._sync_platforms()
+
+    def _refresh_base_model_choices(self) -> None:
+        """Fetch Civitai's live base-model enum list in the background."""
+        def _worker() -> None:
+            try:
+                choices = self.client.base_model_choices()
+            except ApiError:
+                return
+            if choices:
+                self._queue_action("base_models_loaded", {"choices": choices})
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _sync_platforms(self) -> None:
         selected_values = [value for value, var in self.platform_vars.items() if var.get()]
@@ -1213,7 +1585,16 @@ Settings are automatically saved when you close the app."""
         for value in selected_values + manual_values:
             if value not in combined:
                 combined.append(value)
-        return combined
+
+        # Drop values Civitai no longer accepts — a single bad token makes the
+        # whole request fail with HTTP 400, which previously broke all searching.
+        valid: List[str] = []
+        for value in combined:
+            if value in self._valid_base_models_set:
+                valid.append(value)
+            else:
+                self._queue_log(f"Ignoring unknown base model '{value}' (not a valid Civitai platform).")
+        return valid
 
     def _selected_media_types(self) -> List[str]:
         types: List[str] = []
@@ -1275,6 +1656,7 @@ Settings are automatically saved when you close the app."""
         self._update_queue_status()
         if self.download_button is not None:
             self.download_button.config(text="Downloading…", style="Downloading.TButton", state=tk.DISABLED)
+        self._set_progress_active(True)
         self._queue_log("Starting download run...")
         self._download_thread = threading.Thread(target=self._run_download_worker, daemon=True)
         self._download_thread.start()
@@ -1594,7 +1976,8 @@ Settings are automatically saved when you close the app."""
         self.state.filters.username = self.username_var.get().strip()
         self.state.filters.base_models = self._collect_base_models()
         self.state.filters.tag_names = list(self._selected_tags.keys())
-        self.state.filters.nsfw = self.nsfw_var.get()
+        self.state.filters.nsfw = normalize_rating(self.nsfw_var.get())
+        self.state.filters.browsing_level = rating_to_browsing_level(self.state.filters.nsfw)
         self.state.filters.period = self.period_var.get()
         sort_value = self.sort_var.get()
         if sort_value not in SORT_OPTIONS:
@@ -1655,6 +2038,17 @@ Settings are automatically saved when you close the app."""
     def _queue_action(self, action: str, data: Optional[Dict[str, Any]] = None) -> None:
         self._message_queue.put(("action", (action, data)))
 
+    def _classify_log_line(self, line: str) -> str:
+        """Pick a colour tag for an activity-log line based on its content."""
+        low = line.lower()
+        if any(k in low for k in ("error", "fail", "❌", "could not", "unable", "invalid", "exception")):
+            return "error"
+        if any(k in low for k in ("✓", "✅", "done", "complete", "finished", "saved", "success")):
+            return "success"
+        if any(k in low for k in ("⚠", "warning", "skip", "retry", "cancel")):
+            return "warning"
+        return "info"
+
     def _drain_messages(self) -> None:
         flushed = False
         while True:
@@ -1664,7 +2058,7 @@ Settings are automatically saved when you close the app."""
                 break
             if kind == "log":
                 self.log_box.configure(state=tk.NORMAL)
-                self.log_box.insert(tk.END, payload + "\n")
+                self.log_box.insert(tk.END, payload + "\n", (self._classify_log_line(payload),))
                 self.log_box.see(tk.END)
                 self.log_box.configure(state=tk.DISABLED)
                 flushed = True
@@ -1685,8 +2079,17 @@ Settings are automatically saved when you close the app."""
         if action == "aria2_status":
             self._refresh_aria2_status()
             return
+        if action == "base_models_loaded" and data is not None:
+            choices = data.get("choices") or []
+            if choices:
+                self._valid_base_models = list(choices)
+                self._valid_base_models_set = set(choices)
+                if getattr(self, "_platform_picker", None) is not None:
+                    self._platform_picker.configure(values=self._valid_base_models)
+            return
         if action == "download_finished" and self.download_button is not None:
             self.download_button.config(text="⬇ Download", style="Download.TButton", state=tk.NORMAL)
+            self._set_progress_active(False)
             if data and not data.get("success", True):
                 self.status_var.set("Download failed")
             else:
@@ -1700,7 +2103,7 @@ Settings are automatically saved when you close the app."""
             # Update column headings to match the search type
             _HEADERS: Dict[str, List[str]] = {
                 "models":   ["ID", "Name", "Type", "Base Model", "Downloads"],
-                "images":   ["ID", "Model Name", "Media Type", "NSFW Level", "Creator"],
+                "images":   ["ID", "Model Name", "Media Type", "Rating", "Creator"],
                 "creators": ["Username", "Model Count", "", "", ""],
                 "tags":     ["ID", "Tag Name", "Model Count", "", ""],
             }
@@ -1712,9 +2115,9 @@ Settings are automatically saved when you close the app."""
             for row in self.results_tree.get_children():
                 self.results_tree.delete(row)
             self._current_results = items
-            for entry in display:
+            for row_index, entry in enumerate(display):
                 values = tuple(value if value is not None else "" for value in entry)
-                self.results_tree.insert("", tk.END, values=values)
+                self.results_tree.insert("", tk.END, values=values, tags=(theme.row_tag(row_index),))
             self._queue_log(f"Search returned {len(items)} items.")
             self._queue_status("Ready")
             if hasattr(self, "_search_button"):
@@ -1733,7 +2136,7 @@ Settings are automatically saved when you close the app."""
                 iid = name  # tag name is the unique key
                 self._tag_lookup[iid] = name
                 model_count = item.get("modelCount", "")
-                self.tag_results_tree.insert("", tk.END, values=(name, model_count), iid=iid)
+                self.tag_results_tree.insert("", tk.END, values=(name, model_count), iid=iid, tags=(theme.row_tag(inserted),))
                 inserted += 1
             self._queue_log(f"Loaded {inserted} of {len(items)} tags.")
 
@@ -1761,10 +2164,13 @@ Settings are automatically saved when you close the app."""
         except Exception:
             return
         self.api_key_var.set(data.get("api_key", ""))
+        api_base = data.get("api_base")
+        if api_base:
+            self.client.update_base_url(str(api_base))
         self.username_var.set(data.get("username", ""))
         self.model_id_var.set(str(data.get("model_id", "")) if data.get("model_id") else "")
         self.version_id_var.set(str(data.get("version_id", "")) if data.get("version_id") else "")
-        self.nsfw_var.set(data.get("nsfw", "None"))
+        self.nsfw_var.set(normalize_rating(data.get("nsfw", "XXX")))
         self.period_var.set(data.get("period", "AllTime"))
         saved_sort = data.get("sort", SORT_OPTIONS[0])
         if saved_sort not in SORT_OPTIONS:
@@ -1795,6 +2201,9 @@ Settings are automatically saved when you close the app."""
         recent = data.get("recent_dirs", [])
         if isinstance(recent, list):
             self._recent_dirs = [d for d in recent if isinstance(d, str)][:self._max_recent_dirs]
+        pinned = data.get("pinned_dirs", [])
+        if isinstance(pinned, list):
+            self._pinned_dirs = [d for d in pinned if isinstance(d, str)]
         self._refresh_recent_dirs_buttons()
         
         # Load extension server setting and auto-start if was enabled
@@ -1814,6 +2223,7 @@ Settings are automatically saved when you close the app."""
         
         payload = {
             "api_key": self.api_key_var.get().strip(),
+            "api_base": self.client.base_url,
             "username": self.username_var.get().strip(),
             "model_id": self.model_id_var.get().strip(),
             "version_id": self.version_id_var.get().strip(),
@@ -1830,6 +2240,7 @@ Settings are automatically saved when you close the app."""
             "base_models": self._collect_base_models(),
             "tags": {str(k): v for k, v in self._selected_tags.items()},
             "recent_dirs": self._recent_dirs,
+            "pinned_dirs": self._pinned_dirs,
             "extension_server_enabled": self._extension_enabled_var.get(),
         }
         try:

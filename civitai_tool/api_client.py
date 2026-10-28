@@ -8,15 +8,47 @@ import requests
 
 DEFAULT_TIMEOUT = 30
 
+# Civitai serves the full site (all content ratings) from the ".red" domain; the
+# ".com" / "green" domain silently filters results to SFW regardless of the
+# requested rating. Default to ".red" so the in-app rating filters do the work.
+DEFAULT_BASE_URL = "https://civitai.red"
+
+# Mirrors the active client base URL so the standalone URL builders in
+# downloads.py / url_resolver.py resolve links against the same domain.
+CIVITAI_BASE_URL = DEFAULT_BASE_URL
+
+
+def site_base_url() -> str:
+    """Return the currently configured Civitai site/API base URL."""
+    return CIVITAI_BASE_URL
+
 
 class ApiError(RuntimeError):
     pass
 
 
 class CivitaiClient:
-    def __init__(self, api_key: str | None = None, session: Optional[requests.Session] = None) -> None:
+    def __init__(self, api_key: str | None = None, session: Optional[requests.Session] = None,
+                 base_url: str = DEFAULT_BASE_URL) -> None:
         self._session = session or requests.Session()
         self._api_key = api_key
+        self._enums_cache: Optional[Dict] = None
+        self._base_url = (base_url or DEFAULT_BASE_URL).rstrip("/")
+        self._publish_base_url()
+
+    def _publish_base_url(self) -> None:
+        global CIVITAI_BASE_URL
+        CIVITAI_BASE_URL = self._base_url
+
+    @property
+    def base_url(self) -> str:
+        return self._base_url
+
+    def update_base_url(self, base_url: str) -> None:
+        self._base_url = (base_url or DEFAULT_BASE_URL).rstrip("/")
+        self._publish_base_url()
+        # Enum values are identical across domains, but drop the cache to be safe.
+        self._enums_cache = None
 
     def update_api_key(self, api_key: str) -> None:
         self._api_key = api_key or ""
@@ -28,7 +60,7 @@ class CivitaiClient:
         return headers
 
     def _get(self, path: str, params: Optional[Dict[str, object]] = None, timeout: int = DEFAULT_TIMEOUT) -> Dict:
-        url = f"https://civitai.com{path}"
+        url = f"{self._base_url}{path}"
         try:
             response = self._session.get(url, params=params, headers=self._headers(), timeout=timeout)
         except requests.exceptions.RequestException as req_exc:
@@ -80,7 +112,8 @@ class CivitaiClient:
 
     def search_images(self, *, limit: int = 100, cursor: Optional[str] = None, page: Optional[int] = None,
                       model_id: Optional[int] = None, model_version_id: Optional[int] = None,
-                      username: str = "", nsfw: str = "", period: str = "AllTime", sort: str = "Most Reactions",
+                      username: str = "", nsfw: str = "", browsing_level: Optional[int] = None,
+                      period: str = "AllTime", sort: str = "Most Reactions",
                       types: Iterable[str] | None = None, tag_ids: Iterable[int] | None = None,
                       tag_names: Iterable[str] | None = None,
                       base_models: Iterable[str] | None = None, timeout: int = DEFAULT_TIMEOUT) -> Tuple[List[Dict], Dict[str, object]]:
@@ -99,10 +132,20 @@ class CivitaiClient:
             params["modelVersionId"] = model_version_id
         if username:
             params["username"] = username
-        if nsfw:
+        # browsingLevel is the modern 5-tier bitmask (PG/PG-13/R/X/XXX) and takes
+        # precedence over the legacy string nsfw filter when both are supplied.
+        if browsing_level is not None:
+            params["browsingLevel"] = browsing_level
+        elif nsfw:
             params["nsfw"] = nsfw
         if types:
-            params["types"] = ",".join(types)
+            # The images endpoint uses a singular `type` that accepts ONE value
+            # (image|video|audio). Send it only when exactly one type is selected;
+            # otherwise omit it so all media types come back. (The old code sent a
+            # comma-joined `types` param, which the API silently ignored.)
+            type_list = [t for t in types if t]
+            if len(type_list) == 1:
+                params["type"] = type_list[0]
         if tag_ids:
             params["tagIds"] = ",".join(str(tid) for tid in tag_ids)
         if tag_names:
@@ -124,6 +167,51 @@ class CivitaiClient:
             params["query"] = query
         return self._get("/api/v1/tags", params)
 
+    def get_enums(self, *, force: bool = False) -> Dict:
+        """Return Civitai's live enum lists (model types, base models, …).
+
+        Cached after the first successful call so repeated lookups are cheap."""
+        if self._enums_cache is None or force:
+            self._enums_cache = self._get("/api/v1/enums")
+        return self._enums_cache
+
+    def base_model_choices(self, *, active_only: bool = False) -> List[str]:
+        """Return the canonical list of ``baseModels`` filter values.
+
+        These are the exact strings the API accepts for ``baseModels=`` — using
+        anything else yields an HTTP 400. ``active_only`` restricts the result to
+        base models Civitai's on-site generation currently supports."""
+        data = self.get_enums()
+        key = "ActiveBaseModel" if active_only else "BaseModel"
+        values = data.get(key)
+        if not isinstance(values, list):
+            values = data.get("BaseModel") or []
+        return [v for v in values if isinstance(v, str) and v and v != "..."]
+
+    def get_generation_data(self, image_id: int) -> Optional[Dict]:
+        """Fetch an image's full generation data (prompt, resources, settings).
+
+        This uses Civitai's authenticated tRPC endpoint — the same source the
+        website uses — which still returns the prompt even when the public
+        ``/images`` API hides ``meta`` and the file has no embedded metadata.
+        Requires an API key; returns ``None`` on any failure."""
+        if not self._api_key:
+            return None
+        from urllib.parse import quote
+
+        payload = quote(json.dumps({"json": {"id": int(image_id)}}))
+        url = f"{self._base_url}/api/trpc/image.getGenerationData?input={payload}"
+        try:
+            response = self._session.get(url, headers=self._headers(), timeout=DEFAULT_TIMEOUT)
+            response.raise_for_status()
+            data = response.json()
+        except (requests.exceptions.RequestException, json.JSONDecodeError):
+            return None
+        try:
+            return data["result"]["data"]["json"]
+        except (KeyError, TypeError):
+            return None
+
     def model_versions_by_ids(self, version_ids: Iterable[int]) -> Dict[int, Dict]:
         results: Dict[int, Dict] = {}
         for version_id in version_ids:
@@ -133,16 +221,23 @@ class CivitaiClient:
                 continue
         return results
 
+    def auth_headers(self) -> Dict[str, str]:
+        """Authorization header only (no Accept: application/json) for binary downloads."""
+        if self._api_key:
+            return {"Authorization": f"Bearer {self._api_key}"}
+        return {}
+
+    @property
+    def session(self) -> requests.Session:
+        return self._session
+
     def download_to_path(self, url: str, path: str, chunk_size: int = 1 << 15) -> None:
+        """Small-file download (previews, showcase images): .part + rename, 3 attempts."""
+        from pathlib import Path
+
+        from .transfer import TransferError, download_small
+
         try:
-            response = self._session.get(url, headers=self._headers(), stream=True, timeout=60)
-        except requests.exceptions.RequestException as req_exc:
-            raise ApiError(f"Failed download {url}: {req_exc}") from req_exc
-        try:
-            response.raise_for_status()
-        except requests.HTTPError as http_err:
-            raise ApiError(f"Failed download {url}: {response.status_code}") from http_err
-        with open(path, "wb") as handle:
-            for chunk in response.iter_content(chunk_size=chunk_size):
-                if chunk:
-                    handle.write(chunk)
+            download_small(url, Path(path), headers=self.auth_headers(), session=self._session)
+        except TransferError as exc:
+            raise ApiError(str(exc)) from exc

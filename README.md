@@ -11,7 +11,7 @@ A Windows desktop application for browsing and downloading models, LoRAs, and pr
 - **Quantization / variant selection** — When a version ships several weight files (e.g. `bf16`, `fp8`, `int8`, `nvfp4`, GGUF), the app prompts you to pick which one(s) to download instead of pulling every multi-GB variant. Split-component models are handled too: each file is listed with its component type (Diffusion Model, VAE, Text Encoder, …), precision and size, so you can grab, say, just the bf16 diffusion model plus the VAE and one text encoder. Pasting a download link with a specific `?fileId=` honors that exact file automatically. Downloaded weight files are tagged with their precision (e.g. `..._bf16.safetensors`) so variants stay easy to tell apart.
 - **Preview media** — Optionally downloads showcase images and videos alongside the model files.
 - **Full-resolution images with generation data** — Gallery/preview images are fetched at their original resolution (the uploaded file, not a scaled JPEG) and saved with the correct extension (`.png`/`.jpg`/…). The prompt, negative prompt, sampler settings, and any ComfyUI/Civitai workflow embedded in the file are extracted and written into the `.json` sidecar under `_embedded` — even when the public API hides that metadata. An optional **Prompts** toggle also collects every image's prompt into a combined `prompts.txt` (one per line).
-- **Gallery browser** — Fetches community gallery images for a model, filterable by base model, NSFW level, period, tags, and sort order.
+- **Gallery browser** — Fetches community gallery images for a model, filterable by base model, content rating (PG/PG-13/R/X/XXX), period, tags, and sort order.
 - **URL resolver** — Paste any Civitai URL (model, version, post, user) and the tool resolves the correct IDs automatically.
 - **File preview (dry run)** — Click **Preview files** to see every file a version offers — type, precision, format, and size — with weight-file and grand totals, before downloading anything.
 - **Chrome extension** — A browser extension that sends the current Civitai page URL to the desktop app with a single click or keyboard shortcut (default `Ctrl+Shift+K`).
@@ -90,7 +90,7 @@ The `chrome_extension/` folder contains a Manifest V3 extension that adds a butt
 ### Usage
 
 - Click the toolbar icon on any Civitai page, or press the keyboard shortcut (default **Ctrl+Shift+K**).
-- The current URL is sent to the desktop app, which opens a **Quick Download** window where you pick a download location (recent-location buttons or Browse) and click **Download**.
+- The current URL is sent to the desktop app, which opens a **Quick Download** window where you pick a download location and click **Download**. The location picker shows a **stable folder tree** rooted at your model base path (recently-used folders are highlighted but never move), a row of **pinned favorites** you can star for one-click access, and a **type-ahead filter** to jump to a subfolder by name.
 
 > The extension requires the desktop app's local server to be running. Enable it via the **Extension Server** toggle in the Settings tab (see Troubleshooting — it is **off** by default on each launch).
 
@@ -185,7 +185,7 @@ The fastest way to download anything. Paste a Civitai URL (model page, version p
 
 #### Platforms
 
-Checkboxes for common base models (Flux, SDXL, Pony, SD 1.5, etc.). Checked platforms are used as a `baseModel` filter when searching images by username. Use the **Custom** field for any base model not listed.
+Checkboxes for common base models (Flux.1 D, SDXL 1.0, Pony, SD 1.5, Illustrious, Qwen, Krea 2, etc.) with the exact strings the Civitai API expects. Checked platforms are used as a `baseModels` filter when searching models or images. The full, up-to-date list of every base model Civitai supports is fetched live from the `/api/v1/enums` endpoint and offered in the **All models** dropdown — pick one to add it to the filter. Use the **Custom** field for free-form entries. Values that Civitai does not recognize are dropped automatically (a single invalid base model used to make the whole request fail).
 
 #### Model and user filters
 
@@ -200,7 +200,7 @@ Checkboxes for common base models (Flux, SDXL, Pony, SD 1.5, etc.). Checked plat
 
 | Option | What it does |
 |---|---|
-| **NSFW** | Filter by content rating: None, Soft, Mature, or X |
+| **Max rating** | Maximum content rating to include, using Civitai's 5-tier system: **PG**, **PG-13**, **R**, **X**, **XXX**. This maps to the API's `browsingLevel` bitmask (cumulative — e.g. selecting **R** includes PG, PG-13 and R). Replaces the old 4-value NSFW filter. Defaults to **XXX** |
 | **Period** | Time window for sorting: AllTime, Year, Month, Week, Day |
 | **Sort** | Sort order: Most Reactions, Most Comments, Newest, etc. |
 | **Images / Videos** | Toggle whether image or video type results are included |
@@ -213,11 +213,11 @@ Controls what gets saved alongside each downloaded model file:
 |---|---|
 | **Previews** | Download showcase preview images |
 | **Originals** | Download the original full-resolution images |
-| **Workflows** | Download ComfyUI workflow JSON files if present |
+| **Workflows** | Save the **ComfyUI workflow** for each image that has one, as a loadable `.json` (drag-and-drop format) in the `workflows/` subfolder. The workflow comes from Civitai's generation data (the public API no longer exposes it), so it works for gallery and user-profile images too |
 | **Videos** | Download video previews |
 | **Metadata** | Save a `.json` sidecar file with full API metadata, plus an `_embedded` block holding any generation data (prompt, negative prompt, settings, workflow) recovered from the image file itself |
 | **Native size** | Download images at their original resolution (`original=true`) rather than a scaled/re-encoded version. This also preserves the embedded generation metadata, which the scaled copies strip out |
-| **Prompts** | Collect each image's positive prompt into a combined `prompts.txt` in the image folder — one prompt per line. Lines are de-duplicated, so re-running a download never adds the same prompt twice |
+| **Prompts** | Collect each image's positive prompt into a prompts file at the **top level of the download folder** (next to `images/`, `videos/`, `workflows/`) — one prompt per line, de-duplicated. The file is named after its source: **`model_<id>_prompts.txt`** for a model page, **`user_<name>_prompts.txt`** for a user gallery. Prompts come from the image's embedded metadata or, when that's stripped, Civitai's generation data, so they work even for images whose metadata the public API hides. On by default. Prompts are saved whenever images are saved (gallery *and* model showcase previews), and you can enable **Prompts** with **Previews** off to harvest prompts *without* keeping the images |
 
 #### Tags
 
@@ -243,7 +243,7 @@ Select the type from the dropdown next to the **Search** button:
 | Type | What it searches | Columns shown |
 |---|---|---|
 | **models** | Model name/keyword | ID, Name, Type, Base Model, Downloads |
-| **images** | Community images | ID, Model Name, Media Type, NSFW Level, Creator |
+| **images** | Community images — the Civitai image API has no free-text search, so the **Query** is matched as tag name(s) (comma-separate several). The **Platform** checkboxes and **Max rating** on the Filters tab also apply | ID, Model Name, Media Type, Rating, Creator |
 | **creators** | User accounts | Username, Model Count |
 | **tags** | Civitai tag names | ID, Tag Name, Model Count |
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Dict, Optional
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-from .api_client import ApiError, CivitaiClient
+from .api_client import ApiError, CivitaiClient, site_base_url
 from .state import ResolvedEntity
 from .transfer import TransferError, resolve_redirect
 
@@ -211,11 +211,10 @@ def resolve_url(raw_url: str, client: CivitaiClient, hf_token: str = "") -> Opti
 
     if first == "user" and len(segments) >= 2:
         username = segments[1]
-        detail = client.search_models(username=username, limit=1)
-        extra = {"username": username, "modelsLink": f"https://civitai.com/api/v1/models?username={username}"}
-        if detail.get("items"):
-            first_model = detail["items"][0]
-            extra["modelId"] = first_model.get("id")
+        # A user URL (e.g. /user/<name> or /user/<name>/images) is a gallery, not
+        # a model. Never attach a modelId here — doing so made the app download a
+        # random model and scope the gallery to that model's handful of images.
+        extra = {"username": username, "modelsLink": f"{site_base_url()}/api/v1/models?username={username}"}
         return ResolvedEntity(entity_type="creator", identifier=username, name=username, extra=extra)
 
     return None

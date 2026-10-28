@@ -42,3 +42,6 @@ desktop.ini
 .idea/
 *.swp
 *.swo
+
+# - aria2 binary (auto-downloaded at runtime) -
+bin/

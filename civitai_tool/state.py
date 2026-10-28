@@ -35,7 +35,8 @@ class FilterState:
     query: str = ""
     base_models: List[str] = field(default_factory=list)
     tag_names: List[str] = field(default_factory=list)
-    nsfw: str = "None"
+    nsfw: str = "PG"
+    browsing_level: Optional[int] = None
     period: str = "AllTime"
     sort: str = "Most Reactions"
     username: str = ""

@@ -4,10 +4,11 @@ import json
 import os
 from collections import Counter
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple
 
-from .api_client import ApiError, CivitaiClient
+from .api_client import ApiError, CivitaiClient, site_base_url
 from .image_meta import extract_embedded_metadata, sniff_image_ext
 from .state import AppState, DownloadOptions, FilterState
 from .transfer import TransferSpec, download_file, resolve_redirect
@@ -330,6 +331,20 @@ def _has_embedded_workflow_payload(item: Dict) -> bool:
     return False
 
 
+def _clean_prompt_text(value: object) -> Optional[str]:
+    """Return *value* as a flattened one-line prompt, or ``None`` if it isn't
+    usable prompt text (e.g. a ComfyUI graph or other JSON blob)."""
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    # ComfyUI stores its executable graph as JSON; never treat that as a prompt.
+    if text[0] in "{[":
+        return None
+    return " ".join(text.split())
+
+
 def _best_prompt(item: Dict, embedded: Optional[Dict]) -> Optional[str]:
     """Pick the most reliable positive prompt for an image, flattened to one line.
 
@@ -346,19 +361,97 @@ def _best_prompt(item: Dict, embedded: Optional[Dict]) -> Optional[str]:
     if isinstance(meta, dict):
         candidates.append(meta.get("prompt"))
     for candidate in candidates:
-        if isinstance(candidate, str) and candidate.strip():
-            return " ".join(candidate.split())
+        cleaned = _clean_prompt_text(candidate)
+        if cleaned:
+            return cleaned
     return None
 
 
-def _write_prompts_file(target_dir: Path, prompts: List[str], log: LogFunc) -> None:
-    """Append new prompts (one per line) to ``prompts.txt`` in ``target_dir``.
+def _prompt_from_meta(meta: Optional[Dict]) -> Optional[str]:
+    """Flatten a positive prompt out of a generation-data ``meta`` block."""
+    if isinstance(meta, dict):
+        return _clean_prompt_text(meta.get("prompt"))
+    return None
 
+
+def _api_generation_data(client: CivitaiClient, image_id: Optional[object]) -> Optional[Dict]:
+    """Fetch an image's server-side generation data (prompt/resources) via the
+    authenticated tRPC endpoint — the last-resort source when the file and public
+    API both lack a prompt. Returns ``None`` on any failure."""
+    if image_id is None:
+        return None
+    try:
+        return client.get_generation_data(int(image_id))
+    except (TypeError, ValueError):
+        return None
+
+
+def _resolve_image_prompt(client: CivitaiClient, item: Dict, embedded: Optional[Dict],
+                          image_id: Optional[object],
+                          gen_data: Optional[Dict] = None) -> Tuple[Optional[str], Optional[Dict]]:
+    """Return ``(prompt, gen_data)`` trying file/API meta first, then the
+    authenticated generation-data endpoint. ``gen_data`` is fetched lazily and
+    returned so callers can reuse it (e.g. for the metadata sidecar)."""
+    prompt = _best_prompt(item, embedded)
+    if prompt:
+        return prompt, gen_data
+    if gen_data is None:
+        gen_data = _api_generation_data(client, image_id)
+    if isinstance(gen_data, dict):
+        prompt = _prompt_from_meta(gen_data.get("meta"))
+    return prompt, gen_data
+
+
+def _comfy_workflow_from_gen(gen_data: Optional[Dict]) -> Optional[object]:
+    """Extract a loadable ComfyUI workflow from generation data.
+
+    Prefers the UI ``workflow`` (nodes/links/groups — the drag-and-drop format),
+    falling back to the API ``prompt`` graph. Returns ``None`` if neither is
+    present (e.g. the image was not generated with ComfyUI)."""
+    if not isinstance(gen_data, dict):
+        return None
+    meta = gen_data.get("meta")
+    comfy = meta.get("comfy") if isinstance(meta, dict) else None
+    if not isinstance(comfy, dict):
+        return None
+    workflow = comfy.get("workflow")
+    if isinstance(workflow, (dict, list)) and workflow:
+        return workflow
+    prompt_graph = comfy.get("prompt")
+    if isinstance(prompt_graph, (dict, list)) and prompt_graph:
+        return prompt_graph
+    return None
+
+
+def _write_workflow_file(workflows_dir: Path, item_id: object, workflow: object, log: LogFunc) -> bool:
+    """Write a ComfyUI workflow JSON into *workflows_dir* (loadable via drag-drop).
+
+    Returns True if a new file was written. Skips silently when it already exists."""
+    _ensure_dir(workflows_dir)
+    path = workflows_dir / f"{item_id}_workflow.json"
+    if path.exists():
+        return False
+    try:
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(workflow, handle)
+        log(f"Saved ComfyUI workflow → {path}")
+        return True
+    except OSError as exc:
+        log(f"Could not write workflow {path}: {exc}")
+        return False
+
+
+def _write_prompts_file(target_dir: Path, prompts: List[str], log: LogFunc,
+                        filename: str = "prompts.txt") -> None:
+    """Append new prompts (one per line) to *filename* in ``target_dir``.
+
+    The file is named after its source (e.g. ``model_1234_prompts.txt`` or
+    ``user_alice_prompts.txt``) so prompts from different models/users don't mix.
     Existing lines are preserved and used to de-duplicate, so re-running a
     download never adds the same prompt twice."""
     if not prompts:
         return
-    path = target_dir / "prompts.txt"
+    path = target_dir / filename
     existing: List[str] = []
     if path.exists():
         try:
@@ -381,6 +474,19 @@ def _write_prompts_file(target_dir: Path, prompts: List[str], log: LogFunc) -> N
         log(f"Could not write prompts file {path}: {exc}")
 
 
+def _prompts_filename(model_id: Optional[int], username: Optional[str],
+                      prefer_username: bool = False) -> str:
+    """Name the prompts file after its source: ``model_<id>_prompts.txt`` for a
+    model page, ``user_<name>_prompts.txt`` for a user gallery."""
+    if prefer_username and username:
+        return f"user_{_slugify(str(username))}_prompts.txt"
+    if model_id is not None:
+        return f"model_{model_id}_prompts.txt"
+    if username:
+        return f"user_{_slugify(str(username))}_prompts.txt"
+    return "prompts.txt"
+
+
 def _normalize_civitai_url(value: str) -> Optional[str]:
     if not isinstance(value, str):
         return None
@@ -393,7 +499,7 @@ def _normalize_civitai_url(value: str) -> Optional[str]:
     if lowered.startswith("//"):
         return f"https:{token}"
     if token.startswith("/"):
-        return f"https://civitai.com{token}"
+        return f"{site_base_url()}{token}"
     if (
         lowered.startswith("image.civitai.com")
         or lowered.startswith("cdn.civitai.com")
@@ -463,7 +569,7 @@ def fetch_images_for_filters(client: CivitaiClient, filters: FilterState, option
                     model_id=filters.model_id,
                     model_version_id=filters.model_version_id,
                     username=filters.username,
-                    nsfw=filters.nsfw if filters.nsfw != "None" else "",
+                    browsing_level=filters.browsing_level,
                     period=filters.period,
                     sort=filters.sort,
                     types=filters.types,
@@ -542,6 +648,7 @@ def download_image_items(
     resolved = state.resolved
     resolved_extra = resolved.extra if resolved else {}
     prompts_by_dir: Dict[Path, List[str]] = {}
+    prompt_file_by_dir: Dict[Path, str] = {}
 
     for item in items:
         model_id = _first_int(
@@ -572,6 +679,7 @@ def download_image_items(
         if prefer_username:
             model_id = None
             model_version_id = None
+        prompts_filename = _prompts_filename(model_id, username, prefer_username)
         fallback = _determine_model_name(item)
 
         model_candidates: List[object] = [item.get("modelName")]
@@ -652,13 +760,20 @@ def download_image_items(
                 log(f"Video failed for {item_id}: {exc}")
             continue
 
-        if not options.grab_previews:
+        # Images are kept on disk only when previews are requested. When the user
+        # only wants prompts, we still fetch the original (to read its embedded
+        # generation metadata) but discard the file afterwards.
+        keep_image = options.grab_previews
+        if not keep_image and not options.save_prompts:
             continue
         image_url = item.get("url")
         if not isinstance(image_url, str) or not image_url.startswith("http"):
             log(f"No image URL for {item_id}")
             continue
-        download_url = _civitai_original_url(image_url) if options.prefer_native_images else image_url
+        # Civitai's optimized/scaled CDN images have their metadata stripped, so
+        # prompt extraction needs the original file.
+        want_original = options.prefer_native_images or options.save_prompts
+        download_url = _civitai_original_url(image_url) if want_original else image_url
         if has_embedded_workflow:
             embedded_media_dir = paths["workflows"] / "embedded_media"
             _ensure_dir(embedded_media_dir)
@@ -673,11 +788,20 @@ def download_image_items(
              if (target_dir / f"{item_id}{candidate}").exists()),
             None,
         )
-        if existing_image is not None:
+        if keep_image and existing_image is not None:
+            gen_cached: Optional[Dict] = None
             if options.save_prompts:
-                prompt = _best_prompt(item, extract_embedded_metadata(existing_image))
+                embedded_existing = extract_embedded_metadata(existing_image)
+                prompt, gen_cached = _resolve_image_prompt(client, item, embedded_existing, item_id)
                 if prompt:
-                    prompts_by_dir.setdefault(target_dir, []).append(prompt)
+                    prompts_by_dir.setdefault(paths["base"], []).append(prompt)
+                    prompt_file_by_dir.setdefault(paths["base"], prompts_filename)
+            if options.grab_workflows and not (paths["workflows"] / f"{item_id}_workflow.json").exists():
+                if gen_cached is None:
+                    gen_cached = _api_generation_data(client, item_id)
+                workflow = _comfy_workflow_from_gen(gen_cached)
+                if workflow is not None:
+                    _write_workflow_file(paths["workflows"], item_id, workflow, log)
             continue
         tmp_target = target_dir / f"{item_id}.part-img"
         try:
@@ -692,29 +816,56 @@ def download_image_items(
         ext = sniff_image_ext(head)
         if not ext:
             ext = os.path.splitext(urlparse_path(image_url))[-1].lower() or ".jpg"
-        filename = f"{item_id}{ext}"
-        target = target_dir / filename
-        os.replace(tmp_target, target)
 
-        counts["images"] += 1
-        destination = "workflow media" if has_embedded_workflow else "image"
-        log(f"Saved {destination} {filename} → {target.parent}")
-        embedded = extract_embedded_metadata(target) if (options.save_metadata or options.save_prompts) else None
-        if options.save_metadata:
-            payload = {key: item.get(key) for key in item.keys()}
-            if embedded:
-                payload["_embedded"] = embedded
-                if not (isinstance(item.get("meta"), dict) and item.get("meta")):
-                    log(f"Recovered embedded generation data for {filename}.")
-            _write_metadata(target, payload)
+        embedded = (extract_embedded_metadata(tmp_target)
+                    if (options.save_metadata or options.save_prompts) else None)
+        api_meta_empty = not (isinstance(item.get("meta"), dict) and item.get("meta"))
+        gen_data: Optional[Dict] = None  # server-side generation data, fetched lazily
+
+        if keep_image:
+            filename = f"{item_id}{ext}"
+            target = target_dir / filename
+            os.replace(tmp_target, target)
+            counts["images"] += 1
+            destination = "workflow media" if has_embedded_workflow else "image"
+            log(f"Saved {destination} {filename} → {target.parent}")
+            if options.save_metadata:
+                payload = {key: item.get(key) for key in item.keys()}
+                if embedded:
+                    payload["_embedded"] = embedded
+                    if api_meta_empty:
+                        log(f"Recovered embedded generation data for {filename}.")
+                elif api_meta_empty:
+                    gen_data = _api_generation_data(client, item_id)
+                    if gen_data:
+                        payload["_generationData"] = gen_data
+                        log(f"Recovered generation data from Civitai for {filename}.")
+                _write_metadata(target, payload)
+        else:
+            # Prompts-only: we don't keep the image file.
+            tmp_target.unlink(missing_ok=True)
+
         if options.save_prompts:
-            prompt = _best_prompt(item, embedded)
+            prompt, gen_data = _resolve_image_prompt(client, item, embedded, item_id, gen_data)
             if prompt:
-                prompts_by_dir.setdefault(target_dir, []).append(prompt)
+                prompts_by_dir.setdefault(paths["base"], []).append(prompt)
+                prompt_file_by_dir.setdefault(paths["base"], prompts_filename)
+            else:
+                log(f"No prompt found for image {item_id} (not in file, API, or generation data).")
+
+        # Save the ComfyUI workflow (when present) as a loadable JSON. The public
+        # API no longer exposes workflows, so this comes from the generation data.
+        if options.grab_workflows:
+            if gen_data is None:
+                gen_data = _api_generation_data(client, item_id)
+            workflow = _comfy_workflow_from_gen(gen_data)
+            if workflow is not None:
+                _write_workflow_file(paths["workflows"], item_id, workflow, log)
 
     if options.save_prompts:
         for folder, prompts in prompts_by_dir.items():
-            _write_prompts_file(folder, prompts, log)
+            _write_prompts_file(folder, prompts, log,
+                                filename=prompt_file_by_dir.get(folder, "prompts.txt"))
 
     return counts
 
@@ -934,6 +1085,8 @@ def download_version_assets(
             paths=paths,
             options=options,
             log=log,
+            model_id=model_id,
+            username=username,
         )
         if showcase_saved > 0:
             log(f"Captured {showcase_saved} showcase image(s) for version {version_id}.")
@@ -1043,7 +1196,25 @@ def execute_downloads(client: CivitaiClient, state: AppState, log: LogFunc) -> D
                 log(f"Model {model_id_value} has no versions available to download.")
 
     log("Fetching preview media…")
-    items = fetch_images_for_filters(client, state.filters, state.downloads, log)
+    # Target the gallery query at the resolved model/version. These ids are
+    # computed locally above and are not necessarily present on state.filters
+    # (e.g. an extension quick-download leaves the Model ID field blank), so inject
+    # them here — otherwise the query hits the global feed instead of this model.
+    gallery_filters = replace(
+        state.filters,
+        model_id=model_id_value if model_id_value is not None else state.filters.model_id,
+        model_version_id=(preferred_version_id if preferred_version_id is not None
+                          else state.filters.model_version_id),
+    )
+    # When a specific model/version is targeted, or the user pasted a model/user/
+    # image URL, discovery filters (platform + tags) would wrongly narrow the
+    # gallery — a pasted URL should yield that target's full gallery. Drop them.
+    targeted = (gallery_filters.model_id is not None
+                or gallery_filters.model_version_id is not None
+                or resolved is not None)
+    if targeted:
+        gallery_filters = replace(gallery_filters, base_models=[], tag_names=[])
+    items = fetch_images_for_filters(client, gallery_filters, state.downloads, log)
     item_count = len(items)
     log(f"Preview query returned {item_count} item(s).")
 
@@ -1178,9 +1349,12 @@ def _download_showcase_images(
     paths: Dict[str, Path],
     options: DownloadOptions,
     log: LogFunc,
+    model_id: Optional[int] = None,
+    username: Optional[str] = None,
 ) -> int:
     saved = 0
     seen: Set[str] = set()
+    showcase_prompts: List[str] = []
     for index, image in enumerate(images, start=1):
         url = _extract_showcase_url(image)
         if not url:
@@ -1210,13 +1384,39 @@ def _download_showcase_images(
         if target.exists():
             continue
 
+        # Fetch the original (not a scaled copy) when we need its embedded
+        # generation metadata, so prompt extraction can work.
+        want_original = options.prefer_native_images or options.save_prompts
+        download_url = _civitai_original_url(url) if want_original else url
+
         try:
-            client.download_to_path(url, str(target))
+            client.download_to_path(download_url, str(target))
             log(f"Saved showcase image {filename} → {target_dir}")
+            embedded = (extract_embedded_metadata(target)
+                        if (options.save_metadata or options.save_prompts) else None)
             if options.save_metadata:
-                _write_metadata(target, image)
+                payload = dict(image)
+                if embedded:
+                    payload["_embedded"] = embedded
+                _write_metadata(target, payload)
+            if options.save_prompts:
+                prompt, gen_showcase = _resolve_image_prompt(client, image, embedded, image_id)
+                if prompt:
+                    showcase_prompts.append(prompt)
+            else:
+                gen_showcase = None
+            if options.grab_workflows and image_id is not None:
+                if gen_showcase is None:
+                    gen_showcase = _api_generation_data(client, image_id)
+                workflow = _comfy_workflow_from_gen(gen_showcase)
+                if workflow is not None:
+                    _write_workflow_file(paths["workflows"], image_id, workflow, log)
             saved += 1
         except ApiError as exc:
             log(f"Showcase image failed for {filename}: {exc}")
+
+    if options.save_prompts and showcase_prompts:
+        _write_prompts_file(paths["base"], showcase_prompts, log,
+                            filename=_prompts_filename(model_id, username))
 
     return saved
