@@ -35,6 +35,7 @@ class FilterState:
     query: str = ""
     base_models: List[str] = field(default_factory=list)
     tag_names: List[str] = field(default_factory=list)
+    tag_ids: List[int] = field(default_factory=list)
     nsfw: str = "PG"
     browsing_level: Optional[int] = None
     period: str = "AllTime"
@@ -56,6 +57,9 @@ class DownloadOptions:
     save_prompts: bool = False
     max_items: int = 0
     output_root: str = "downloads"
+    # Forces every item in a run into one subfolder (used for tag/keyword feeds
+    # whose images come from many different models and uploaders).
+    folder_override: Optional[str] = None
     # When set, only model-type files whose id is in this list are downloaded.
     # None means "no restriction" (download every model file in the version).
     selected_file_ids: Optional[List[int]] = None

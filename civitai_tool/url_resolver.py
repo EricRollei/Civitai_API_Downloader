@@ -209,6 +209,31 @@ def resolve_url(raw_url: str, client: CivitaiClient, hf_token: str = "") -> Opti
             extra["modelVersion"] = version_info
         return ResolvedEntity(entity_type="image", identifier=str(image_id), name=f"Image {image_id}", extra=extra)
 
+    if first == "images":
+        # Feed view: /images?tags=<id,id>&view=feed (and optionally &username=).
+        tag_ids: list[int] = []
+        for key in ("tags", "tagIds"):
+            for value in query_params.get(key, []):
+                for part in str(value).split(","):
+                    numeric = _extract_numeric(part)
+                    if numeric is not None and numeric not in tag_ids:
+                        tag_ids.append(numeric)
+        feed_username = ""
+        for value in query_params.get("username", []):
+            if value:
+                feed_username = value
+                break
+        if tag_ids or feed_username:
+            extra: Dict[str, object] = {}
+            if tag_ids:
+                extra["tagIds"] = tag_ids
+            if feed_username:
+                extra["username"] = feed_username
+            label = ", ".join(str(t) for t in tag_ids) if tag_ids else feed_username
+            return ResolvedEntity(entity_type="imageFeed", identifier=f"feed:{label}",
+                                  name=f"Image feed ({label})", extra=extra)
+        return None
+
     if first == "user" and len(segments) >= 2:
         username = segments[1]
         # A user URL (e.g. /user/<name> or /user/<name>/images) is a gallery, not

@@ -232,7 +232,9 @@ def _resolve_media_paths(
     root = Path(options.output_root).expanduser()
     _ensure_dir(root)
 
-    if model_id is not None and model_version_id is not None:
+    if options.folder_override:
+        base = root / _folder_segment(options.folder_override)
+    elif model_id is not None and model_version_id is not None:
         model_segment = _folder_segment(model_id)
         if model_name:
             name_segment = _folder_segment(model_name, "")
@@ -574,6 +576,7 @@ def fetch_images_for_filters(client: CivitaiClient, filters: FilterState, option
                     sort=filters.sort,
                     types=filters.types,
                     tag_names=filters.tag_names,
+                    tag_ids=filters.tag_ids,
                     base_models=filters.base_models,
                     timeout=60,
                 )
@@ -679,7 +682,10 @@ def download_image_items(
         if prefer_username:
             model_id = None
             model_version_id = None
-        prompts_filename = _prompts_filename(model_id, username, prefer_username)
+        if options.folder_override:
+            prompts_filename = f"{_folder_segment(options.folder_override)}_prompts.txt"
+        else:
+            prompts_filename = _prompts_filename(model_id, username, prefer_username)
         fallback = _determine_model_name(item)
 
         model_candidates: List[object] = [item.get("modelName")]
@@ -1214,6 +1220,24 @@ def execute_downloads(client: CivitaiClient, state: AppState, log: LogFunc) -> D
                 or resolved is not None)
     if targeted:
         gallery_filters = replace(gallery_filters, base_models=[], tag_names=[])
+
+    # A tag/keyword feed (/images?tags=…): drive the query by the tag IDs the user
+    # pasted, scope by any feed username, and group everything into one folder.
+    if resolved is not None and resolved.entity_type == "imageFeed":
+        feed_tag_ids = [int(t) for t in (resolved.extra.get("tagIds") or [])
+                        if isinstance(t, (int, str)) and str(t).isdigit()]
+        feed_username = resolved.extra.get("username")
+        gallery_filters = replace(
+            gallery_filters,
+            tag_ids=feed_tag_ids or gallery_filters.tag_ids,
+            username=feed_username if isinstance(feed_username, str) and feed_username else gallery_filters.username,
+        )
+        if state.downloads.folder_override is None:
+            if feed_tag_ids:
+                state.downloads.folder_override = "tag_" + "_".join(str(t) for t in feed_tag_ids)
+            elif isinstance(feed_username, str) and feed_username:
+                state.downloads.folder_override = _folder_segment(feed_username)
+
     items = fetch_images_for_filters(client, gallery_filters, state.downloads, log)
     item_count = len(items)
     log(f"Preview query returned {item_count} item(s).")

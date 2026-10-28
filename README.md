@@ -12,7 +12,7 @@ A Windows desktop application for browsing and downloading models, LoRAs, and pr
 - **Preview media** — Optionally downloads showcase images and videos alongside the model files.
 - **Full-resolution images with generation data** — Gallery/preview images are fetched at their original resolution (the uploaded file, not a scaled JPEG) and saved with the correct extension (`.png`/`.jpg`/…). The prompt, negative prompt, sampler settings, and any ComfyUI/Civitai workflow embedded in the file are extracted and written into the `.json` sidecar under `_embedded` — even when the public API hides that metadata. An optional **Prompts** toggle also collects every image's prompt into a combined `prompts.txt` (one per line).
 - **Gallery browser** — Fetches community gallery images for a model, filterable by base model, content rating (PG/PG-13/R/X/XXX), period, tags, and sort order.
-- **URL resolver** — Paste any Civitai URL (model, version, post, user) and the tool resolves the correct IDs automatically.
+- **URL resolver** — Paste any Civitai URL (model, version, image, user, or a **tag/keyword image feed** like `/images?tags=118113`) and the tool resolves it automatically. A tag feed downloads every matching image into a single `tag_<id>/` folder with its own `tag_<id>_prompts.txt`.
 - **File preview (dry run)** — Click **Preview files** to see every file a version offers — type, precision, format, and size — with weight-file and grand totals, before downloading anything.
 - **Chrome extension** — A browser extension that sends the current Civitai page URL to the desktop app with a single click or keyboard shortcut (default `Ctrl+Shift+K`).
 - **Local server** — Lightweight HTTP server (port 7865) that receives URLs from the Chrome extension.

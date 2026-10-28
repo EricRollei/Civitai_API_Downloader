@@ -1296,8 +1296,7 @@ Settings are automatically saved when you close the app."""
             self.version_id_var.set(str(entity.model_version_id))
         else:
             self.version_id_var.set("")
-        if entity.extra.get("username"):
-            self.username_var.set(entity.extra["username"])
+        self.username_var.set(entity.extra.get("username") or "")
         # A pasted URL targets a specific model/user/image, so clear the discovery
         # filters (platform checkboxes + tags) — otherwise leftover selections
         # silently narrow the gallery (e.g. a stale "Krea 2" cutting 300 → 25).
